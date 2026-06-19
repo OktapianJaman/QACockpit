@@ -872,6 +872,8 @@ pub fn post_test_results(
         }
         rows.push(integrations::jira::ResultRow {
             title: c.title.clone(),
+            steps: c.steps.clone(),
+            expected: c.expected.clone(),
             status: c.status.clone(),
             notes: c.notes.clone(),
         });

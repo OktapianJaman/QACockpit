@@ -428,6 +428,8 @@ pub fn fetch_my_issues(
 #[derive(Debug, Clone)]
 pub struct ResultRow {
     pub title: String,
+    pub steps: String,
+    pub expected: String,
     pub status: String,
     pub notes: String,
 }
@@ -476,18 +478,27 @@ pub fn build_results_adf(
         })
     };
 
+    // A cell that shows a dash when the text is empty (keeps cells non-blank).
+    let text_cell = |text: &str| {
+        let t = if text.trim().is_empty() { "—" } else { text };
+        cell(vec![para(t)])
+    };
+
     let mut table_rows: Vec<Value> = Vec::with_capacity(rows.len() + 1);
+    // No manual "No" column — `isNumberColumnEnabled` below gives Jira's own
+    // narrow auto-number column on the left.
     table_rows.push(serde_json::json!({
         "type": "tableRow",
         "content": [
-            header_cell("No"),
             header_cell("Test Case"),
+            header_cell("Langkah"),
+            header_cell("Harapan"),
             header_cell("Hasil & Catatan"),
         ]
     }));
-    for (i, r) in rows.iter().enumerate() {
+    for r in rows.iter() {
         let (label, color) = status_lozenge(&r.status);
-        // The 3rd cell's paragraph: an inline `status` lozenge, optionally
+        // The result cell's paragraph: an inline `status` lozenge, optionally
         // followed by a hardBreak + the note text (same paragraph).
         let mut result_inline: Vec<Value> = vec![serde_json::json!({
             "type": "status",
@@ -505,8 +516,9 @@ pub fn build_results_adf(
         table_rows.push(serde_json::json!({
             "type": "tableRow",
             "content": [
-                cell(vec![para(&(i + 1).to_string())]),
                 cell(vec![para(&r.title)]),
+                text_cell(&r.steps),
+                text_cell(&r.expected),
                 cell(vec![result_para]),
             ]
         }));
@@ -531,7 +543,7 @@ pub fn build_results_adf(
             },
             {
                 "type": "table",
-                "attrs": { "isNumberColumnEnabled": false, "layout": "default" },
+                "attrs": { "isNumberColumnEnabled": true, "layout": "default" },
                 "content": table_rows
             }
         ]
@@ -574,11 +586,15 @@ mod tests {
         let rows = vec![
             ResultRow {
                 title: "Login valid".to_string(),
+                steps: "Buka login, isi benar".to_string(),
+                expected: "Masuk dashboard".to_string(),
                 status: "passed".to_string(),
                 notes: String::new(),
             },
             ResultRow {
                 title: "Login invalid".to_string(),
+                steps: "Isi password salah".to_string(),
+                expected: "Pesan error".to_string(),
                 status: "failed".to_string(),
                 notes: "Muncul 500, bukan pesan error".to_string(),
             },
@@ -616,29 +632,30 @@ mod tests {
         // 1 header row + 2 body rows.
         assert_eq!(trows.len(), 3);
 
-        // Header row has 3 header cells; 3rd is "Hasil & Catatan".
+        // Header row has 4 header cells: Test Case / Langkah / Harapan / Hasil & Catatan.
         let header = trows[0]["content"].as_array().unwrap();
-        assert_eq!(header.len(), 3);
+        assert_eq!(header.len(), 4);
         assert_eq!(header[0]["type"], "tableHeader");
+        assert_eq!(header[0]["content"][0]["content"][0]["text"], "Test Case");
         assert_eq!(
-            header[2]["content"][0]["content"][0]["text"],
+            header[3]["content"][0]["content"][0]["text"],
             "Hasil & Catatan"
         );
 
-        // A body cell's text matches (row 1, second cell = title).
+        // A body cell's text matches (row 1, first cell = title).
         assert_eq!(
-            trows[1]["content"][1]["content"][0]["content"][0]["text"],
+            trows[1]["content"][0]["content"][0]["content"][0]["text"],
             "Login valid"
         );
 
-        // Row 1 result cell contains a `status` lozenge with text "PASS".
-        let pass_status = &trows[1]["content"][2]["content"][0]["content"][0];
+        // Row 1 result cell (4th) contains a `status` lozenge with text "PASS".
+        let pass_status = &trows[1]["content"][3]["content"][0]["content"][0];
         assert_eq!(pass_status["type"], "status");
         assert_eq!(pass_status["attrs"]["text"], "PASS");
         assert_eq!(pass_status["attrs"]["color"], "green");
 
-        // Row 2 result cell: FAIL lozenge + hardBreak + the note text.
-        let fail_inline = trows[2]["content"][2]["content"][0]["content"]
+        // Row 2 result cell (4th): FAIL lozenge + hardBreak + the note text.
+        let fail_inline = trows[2]["content"][3]["content"][0]["content"]
             .as_array()
             .unwrap();
         assert_eq!(fail_inline[0]["type"], "status");
