@@ -153,6 +153,14 @@
           <label>Assignee
             <select id="cfg-jira_assignee"></select>
           </label>
+          <label>Lingkup Sprint
+            <select id="cfg-jira_sprint_scope">
+              <option value="">Semua (sepanjang waktu)</option>
+              <option value="active">Sprint aktif sekarang</option>
+              <option value="backlog">Backlog (belum masuk sprint)</option>
+            </select>
+            <small class="field-hint">Pilih "Sprint aktif" biar cuma tiket sprint berjalan (mis. Sprint 58) yang muncul.</small>
+          </label>
           <label>Tampilkan status
             <select id="cfg-jira_status_category">
               <option value="">Semua status</option>

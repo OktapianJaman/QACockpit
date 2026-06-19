@@ -49,6 +49,8 @@ pub struct AppConfig {
     pub jira_assignee: String,
     /// Status-category filter: "" (all) | "To Do" | "In Progress" | "Done".
     pub jira_status_category: String,
+    /// Sprint scope: "" (all-time) | "active" (current sprint) | "backlog".
+    pub jira_sprint_scope: String,
     pub github_token: String,
     pub gemma_model: String,
 }
@@ -68,6 +70,7 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_project: get("jira_project")?.unwrap_or_default(),
         jira_assignee: get("jira_assignee")?.unwrap_or_default(),
         jira_status_category: get("jira_status_category")?.unwrap_or_default(),
+        jira_sprint_scope: get("jira_sprint_scope")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
         gemma_model: get("gemma_model")?.unwrap_or_default(),
     })
@@ -82,6 +85,7 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_project", &cfg.jira_project)?;
     set("jira_assignee", &cfg.jira_assignee)?;
     set("jira_status_category", &cfg.jira_status_category)?;
+    set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
     set("github_token", &cfg.github_token)?;
     set("gemma_model", &cfg.gemma_model)?;
     Ok(())
@@ -453,6 +457,7 @@ pub fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String>
         &cfg.jira_project,
         &cfg.jira_assignee,
         &cfg.jira_status_category,
+        &cfg.jira_sprint_scope,
     )
     .map_err(|e| format!("Jira sync failed: {e}"))?;
     integrations::save_tickets(&conn, &tickets).map_err(|e| e.to_string())?;

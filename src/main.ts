@@ -83,6 +83,7 @@ interface AppConfig {
   jira_project: string;
   jira_assignee: string;
   jira_status_category: string;
+  jira_sprint_scope: string;
   github_token: string;
   gemma_model: string;
 }
@@ -95,6 +96,7 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_project",
   "jira_assignee",
   "jira_status_category",
+  "jira_sprint_scope",
   "github_token",
   "gemma_model",
 ];
