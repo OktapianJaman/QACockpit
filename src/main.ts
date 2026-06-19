@@ -60,6 +60,7 @@ interface AppConfig {
   jira_assignee: string;
   jira_sprint_scope: string;
   github_token: string;
+  github_repos: string;
   gemma_model: string;
 }
 
@@ -72,6 +73,7 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_assignee",
   "jira_sprint_scope",
   "github_token",
+  "github_repos",
   "gemma_model",
 ];
 
@@ -504,6 +506,67 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
 let detailKey: string | null = null;
 // PRs linked to the open ticket (a ticket can span repos, e.g. native + flutter).
 let linkedPrs: PrRef[] = [];
+// Known repos (from config) for the PR repo dropdown.
+let knownRepos: string[] = [];
+
+/** Load the configured repo list (comma/newline separated owner/repo). */
+async function loadKnownRepos(): Promise<void> {
+  try {
+    const cfg = await invoke<AppConfig>("get_config");
+    knownRepos = (cfg.github_repos || "")
+      .split(/[,\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } catch {
+    knownRepos = [];
+  }
+}
+
+/** Fill the PR repo dropdown from knownRepos. */
+function populateRepoDropdown(): void {
+  const sel = $("pr-repo") as HTMLSelectElement;
+  if (knownRepos.length === 0) {
+    sel.innerHTML = `<option value="">(set repo di Settings)</option>`;
+  } else {
+    sel.innerHTML = knownRepos
+      .map((r) => `<option value="${esc(r)}">${esc(r)}</option>`)
+      .join("");
+  }
+}
+
+/** "+ Tambah PR" via the repo dropdown + number input. */
+async function addPrFromPicker(): Promise<void> {
+  const repo = ($("pr-repo") as HTMLSelectElement).value.trim();
+  const numEl = $("pr-num") as HTMLInputElement;
+  const number = Number(numEl.value.trim());
+  if (!repo) {
+    toast("Pilih repo dulu (atau set daftar repo di Settings).", "error");
+    return;
+  }
+  if (!number || number < 1) {
+    toast("Isi nomor PR-nya (mis. 3231).", "error");
+    return;
+  }
+  const pr: PrRef = {
+    number,
+    repo,
+    title: `PR #${number}`,
+    state: "",
+    url: `https://github.com/${repo}/pull/${number}`,
+  };
+  const isNew = addLinkedPr(pr);
+  numEl.value = "";
+  renderPrs();
+  if (!isNew) {
+    toast("PR itu udah ada di daftar.");
+    return;
+  }
+  const items = $("pr-list").querySelectorAll<HTMLElement>(".pr-item");
+  const last = items[items.length - 1];
+  const btn = last?.querySelector<HTMLButtonElement>(".pr-summarize");
+  const panel = last?.querySelector<HTMLDivElement>(".pr-review");
+  if (btn && panel) await summarizePr(pr, btn, panel);
+}
 
 /** Find a loaded board ticket by key (module already holds them). */
 function ticketByKey(key: string): BoardTicket | undefined {
@@ -539,6 +602,7 @@ async function openDetail(key: string): Promise<void> {
   $("tc-counter").textContent = "";
   // Reset the PR tab (clear linked PRs from the previous ticket).
   linkedPrs = [];
+  populateRepoDropdown();
   $("pr-list").innerHTML = "";
   show($("pr-empty"), true);
   $("pr-empty").textContent = "Tempel link PR di atas (boleh lebih dari satu), atau cari otomatis.";
@@ -1071,6 +1135,7 @@ async function saveSettings(): Promise<void> {
   const cfg = readConfigFromForm();
   try {
     await invoke("set_config", { cfg });
+    await loadKnownRepos(); // repo list may have changed
     toast("Pengaturan tersimpan.");
     closeSettings();
   } catch (e) {
@@ -1217,6 +1282,10 @@ function wireEvents(): void {
   $("tab-pr").addEventListener("click", () => selectTab("pr"));
   $("pr-search").addEventListener("click", () => void searchPrs());
   $("pr-link-go").addEventListener("click", () => void summarizeFromLink());
+  $("pr-add").addEventListener("click", () => void addPrFromPicker());
+  $("pr-num").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") void addPrFromPicker();
+  });
   $("pr-link").addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") void summarizeFromLink();
   });
@@ -1237,6 +1306,7 @@ function wireEvents(): void {
 
 async function init(): Promise<void> {
   wireEvents();
+  await loadKnownRepos();
   await refreshBoard();
 }
 

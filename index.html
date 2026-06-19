@@ -86,17 +86,22 @@
 
         <div id="panel-pr" class="tab-panel hidden">
           <div class="pr-section">
+            <div class="pr-pick">
+              <select id="pr-repo" class="pr-repo-select" title="Pilih repo"></select>
+              <input id="pr-num" class="pr-num-input" type="number" min="1" placeholder="No. PR (mis. 3231)" />
+              <button id="pr-add" class="btn small primary">+ Tambah PR</button>
+            </div>
+            <div class="pr-or">— atau tempel link —</div>
             <div class="pr-manual">
               <input id="pr-link" class="pr-link-input" type="text"
-                placeholder="Tempel link PR GitHub (https://github.com/owner/repo/pull/123)" />
-              <button id="pr-link-go" class="btn small primary">✨ Ringkas link ini</button>
+                placeholder="https://github.com/owner/repo/pull/123" />
+              <button id="pr-link-go" class="btn small">Tambah</button>
             </div>
-            <div class="pr-or">— atau —</div>
             <div class="pr-actions">
               <button id="pr-search" class="btn small">🔍 Cari otomatis dari kode tiket</button>
             </div>
             <div id="pr-list" class="pr-list"></div>
-            <div id="pr-empty" class="pr-empty">Tempel link PR di atas, atau coba cari otomatis.</div>
+            <div id="pr-empty" class="pr-empty">Pilih repo + nomor PR di atas, atau tempel link.</div>
           </div>
         </div>
       </div>
@@ -165,6 +170,11 @@
           </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />
+          </label>
+          <label>GitHub Repos <span class="opt">(buat dropdown PR)</span>
+            <input type="text" id="cfg-github_repos"
+              placeholder="tr8team/gotradeindoapp, tr8team/tradecharlieflutter" />
+            <small class="field-hint">Pisahkan pakai koma. Nanti tinggal pilih repo + ketik nomor PR.</small>
           </label>
           <label>Gemma Model
             <select id="cfg-gemma_model"></select>

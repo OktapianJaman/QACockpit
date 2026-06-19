@@ -55,6 +55,9 @@ pub struct AppConfig {
     /// Sprint scope: "" (all-time) | "active" (current sprint) | "backlog".
     pub jira_sprint_scope: String,
     pub github_token: String,
+    /// Known repos (comma/newline separated "owner/repo") for the PR repo picker.
+    #[serde(default)]
+    pub github_repos: String,
     pub gemma_model: String,
 }
 
@@ -75,6 +78,7 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_status_category: get("jira_status_category")?.unwrap_or_default(),
         jira_sprint_scope: get("jira_sprint_scope")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
+        github_repos: get("github_repos")?.unwrap_or_default(),
         gemma_model: get("gemma_model")?.unwrap_or_default(),
     })
 }
@@ -90,6 +94,7 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_status_category", &cfg.jira_status_category)?;
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
     set("github_token", &cfg.github_token)?;
+    set("github_repos", &cfg.github_repos)?;
     set("gemma_model", &cfg.gemma_model)?;
     Ok(())
 }
