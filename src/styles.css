@@ -530,21 +530,61 @@ h2 {
 .tc-item {
   background: var(--bg-elev2);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 8px;
-  padding: 10px 11px;
+  padding: 9px 11px;
+}
+
+.tc-item.tc-passed {
+  border-left-color: var(--green);
+}
+.tc-item.tc-failed {
+  border-left-color: var(--red);
 }
 
 .tc-item-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
 }
 
 .tc-title {
-  font-size: 13.5px;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  cursor: default;
+}
+
+.tc-item.open .tc-title,
+.tc-toggle {
+  cursor: pointer;
+}
+
+.tc-toggle {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: transform 0.15s;
+}
+.tc-item.open .tc-toggle {
+  transform: rotate(180deg);
+}
+
+/* Steps/expected collapse by default; expand on toggle. */
+.tc-detail {
+  display: none;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+.tc-item.open .tc-detail {
+  display: block;
 }
 
 .tc-field {
@@ -561,8 +601,8 @@ h2 {
 
 .tc-item-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 9px;
+  gap: 6px;
+  flex: none;
 }
 
 .tc-pill {

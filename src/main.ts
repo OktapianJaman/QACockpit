@@ -472,7 +472,10 @@ function tcStatusLabel(status: string): string {
 }
 
 /** Render the test-case list + counter for the open ticket. */
+let detailCases: TestCase[] = [];
+
 function renderTestCases(cases: TestCase[]): void {
+  detailCases = cases;
   const list = $("tc-list");
   show($("tc-empty"), cases.length === 0);
 
@@ -486,19 +489,33 @@ function renderTestCases(cases: TestCase[]): void {
   list.innerHTML = "";
   for (const c of cases) {
     const item = document.createElement("div");
-    item.className = "tc-item";
+    item.className = `tc-item tc-${c.status}`;
+    const hasDetail = !!(c.steps || c.expected);
     item.innerHTML = `
       <div class="tc-item-head">
         <span class="${tcStatusClass(c.status)}">${esc(tcStatusLabel(c.status))}</span>
         <span class="tc-title">${esc(c.title)}</span>
+        ${hasDetail ? `<button class="tc-toggle" type="button" title="Lihat detail">▾</button>` : ""}
+        <div class="tc-item-actions">
+          <button class="btn small tc-pass" type="button" title="Pass">✅</button>
+          <button class="btn small tc-fail" type="button" title="Fail">❌</button>
+          <button class="btn small tc-del" type="button" title="Hapus">🗑</button>
+        </div>
       </div>
-      ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
-      ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
-      <div class="tc-item-actions">
-        <button class="btn small tc-pass" type="button">✅ Pass</button>
-        <button class="btn small tc-fail" type="button">❌ Fail</button>
-        <button class="btn small tc-del" type="button" title="Hapus">🗑</button>
-      </div>`;
+      ${
+        hasDetail
+          ? `<div class="tc-detail">
+              ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
+              ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
+            </div>`
+          : ""
+      }`;
+
+    const toggle = item.querySelector<HTMLButtonElement>(".tc-toggle");
+    const titleEl = item.querySelector<HTMLElement>(".tc-title");
+    const doToggle = (): void => item.classList.toggle("open");
+    toggle?.addEventListener("click", doToggle);
+    if (hasDetail) titleEl?.addEventListener("click", doToggle);
 
     item.querySelector<HTMLButtonElement>(".tc-pass")?.addEventListener("click", () =>
       void setTestCaseStatus(c.id, "passed")
