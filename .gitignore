@@ -1,0 +1,6 @@
+target/
+node_modules/
+*.db
+*.sqlite
+.DS_Store
+.env
