@@ -292,11 +292,7 @@ pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String
             .then_with(|| a.key.cmp(&b.key))
     });
 
-    let header = DashboardHeader {
-        deserved_total: deserved_points(worked_total),
-        assigned_total,
-        net_work_secs: worked_total,
-    };
+    let _ = worked_total; // header now uses total activity, not just tagged time
 
     // --- timeline: all blocks for the day (incl. idle), with row ids ---
     let mut stmt = conn
@@ -328,6 +324,19 @@ pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String
     for r in rows {
         timeline.push(r.map_err(|e| e.to_string())?);
     }
+
+    // Header reflects ALL non-idle activity today (so it moves as soon as you
+    // record), while "assigned" stays the story points of tickets you've tagged.
+    let net_work_secs: i64 = timeline
+        .iter()
+        .filter(|b| !b.is_idle)
+        .map(|b| duration_secs(&b.start, &b.end))
+        .sum();
+    let header = DashboardHeader {
+        deserved_total: deserved_points(net_work_secs),
+        assigned_total,
+        net_work_secs,
+    };
 
     // --- all pull requests ---
     let mut pstmt = conn
@@ -385,16 +394,20 @@ pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String
 }
 
 /// Whole-minute duration between two RFC3339 timestamps; 0 on parse failure.
-fn duration_minutes(start: &str, end: &str) -> i64 {
+fn duration_secs(start: &str, end: &str) -> i64 {
     let parse = |s: &str| {
         chrono::DateTime::parse_from_rfc3339(s)
             .ok()
             .map(|d| d.with_timezone(&chrono::Utc))
     };
     match (parse(start), parse(end)) {
-        (Some(s), Some(e)) => ((e - s).num_seconds().max(0)) / 60,
+        (Some(s), Some(e)) => (e - s).num_seconds().max(0),
         _ => 0,
     }
+}
+
+fn duration_minutes(start: &str, end: &str) -> i64 {
+    duration_secs(start, end) / 60
 }
 
 // ---------------------------------------------------------------------------
