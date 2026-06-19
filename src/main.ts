@@ -173,30 +173,61 @@ function pointsLabel(pts: number | null): string {
   return pts == null ? "— pts" : `${fmtPoints(pts)} pts`;
 }
 
-/** Build one table row for a ticket (click key/title → detail; inline points;
- *  status button → transition picker). No drag — WKWebView DnD is unreliable. */
-function buildRow(t: BoardTicket): HTMLElement {
-  const tr = document.createElement("tr");
-  tr.className = "brow";
-  tr.innerHTML = `
-    <td class="bk mono">${esc(t.key)}</td>
-    <td class="bj">${esc(t.summary || "—")}</td>
-    <td class="bp"><button class="ct-points" type="button" title="Klik untuk ubah story point">${esc(
-      pointsLabel(t.story_points)
-    )}</button></td>
-    <td class="bs"><button class="status-btn" type="button" title="Klik untuk ganti status">${esc(
-      t.status || "—"
-    )} ▾</button></td>`;
+/** Distinct statuses present, ordered by the preferred sequence then alpha. */
+function orderedStatuses(tickets: BoardTicket[]): string[] {
+  return [...new Set(tickets.map((t) => t.status).filter(Boolean))].sort((a, b) => {
+    const r = statusRank(a) - statusRank(b);
+    return r !== 0 ? r : a.localeCompare(b);
+  });
+}
 
-  tr.querySelector(".bk")?.addEventListener("click", () => void openDetail(t.key));
-  tr.querySelector(".bj")?.addEventListener("click", () => void openDetail(t.key));
-  const ptsBtn = tr.querySelector<HTMLButtonElement>(".ct-points");
+/** Build one card (click → detail; inline points; "pindah" → transition picker).
+ *  No drag — WKWebView DnD is unreliable; status moves via the picker. */
+function buildCard(t: BoardTicket): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "kcard";
+  card.innerHTML = `
+    <div class="kc-key mono">${esc(t.key)}</div>
+    <div class="kc-summary">${esc(t.summary || "—")}</div>
+    <div class="kc-foot">
+      <button class="ct-points" type="button" title="Klik untuk ubah story point">${esc(
+        pointsLabel(t.story_points)
+      )}</button>
+      <button class="status-btn kc-move" type="button" title="Pindahkan status">pindah ▾</button>
+    </div>`;
+
+  card.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).closest("button")) return; // points / pindah
+    void openDetail(t.key);
+  });
+  const ptsBtn = card.querySelector<HTMLButtonElement>(".ct-points");
   ptsBtn?.addEventListener("click", () => startPointEdit(t, ptsBtn));
-  tr.querySelector<HTMLButtonElement>(".status-btn")?.addEventListener(
+  card.querySelector<HTMLButtonElement>(".kc-move")?.addEventListener(
     "click",
     () => void shiftStatus(t.key)
   );
-  return tr;
+  return card;
+}
+
+/** Build a column for one status, filled with its (filtered) cards. */
+function buildColumn(status: string, cards: BoardTicket[]): HTMLElement {
+  const col = document.createElement("section");
+  col.className = "column";
+  const head = document.createElement("div");
+  head.className = "column-head";
+  head.innerHTML = `
+    <span class="col-name" title="${esc(status)}">${esc(status)}</span>
+    <span class="col-count">${cards.length}</span>`;
+  col.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "column-body";
+  if (cards.length === 0) {
+    body.innerHTML = `<div class="col-empty">—</div>`;
+  } else {
+    for (const t of cards) body.appendChild(buildCard(t));
+  }
+  col.appendChild(body);
+  return col;
 }
 
 /** Turn the points badge into a number input; commit on Enter/blur. */
@@ -246,7 +277,8 @@ async function savePoints(key: string, points: number | null): Promise<void> {
   await refreshBoard();
 }
 
-/** Render the ticket table, grouped/sorted by status and filtered by search. */
+/** Render the board as columns (one per status), filtered by search. Columns
+ *  stay stable (from the full set); only the cards inside are filtered. */
 function renderBoard(tickets: BoardTicket[]): void {
   const board = $("board");
   show($("board-empty"), tickets.length === 0);
@@ -256,28 +288,16 @@ function renderBoard(tickets: BoardTicket[]): void {
   }
 
   const q = boardSearch.trim().toLowerCase();
-  const rows = tickets
-    .filter(
-      (t) => !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q)
-    )
-    .sort((a, b) => {
-      const r = statusRank(a.status) - statusRank(b.status);
-      return r !== 0 ? r : a.key.localeCompare(b.key);
-    });
+  const match = (t: BoardTicket): boolean =>
+    !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q);
 
-  board.innerHTML = `
-    <table class="board-table">
-      <thead>
-        <tr><th>Tiket</th><th>Judul</th><th class="num">Poin</th><th>Status</th></tr>
-      </thead>
-      <tbody id="board-tbody"></tbody>
-    </table>`;
-  const tb = $("board-tbody");
-  if (rows.length === 0) {
-    tb.innerHTML = `<tr><td colspan="4" class="board-noresult">Nggak ada tiket yang cocok.</td></tr>`;
-    return;
+  board.innerHTML = "";
+  for (const status of orderedStatuses(tickets)) {
+    const cards = tickets
+      .filter((t) => t.status === status && match(t))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    board.appendChild(buildColumn(status, cards));
   }
-  for (const t of rows) tb.appendChild(buildRow(t));
 }
 
 async function refreshBoard(): Promise<void> {

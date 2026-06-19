@@ -206,6 +206,122 @@ h2 {
   padding: 80px 16px;
 }
 
+/* ---------------- Column board ---------------- */
+
+.board-wrap {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  min-height: calc(100vh - 18px * 2 - 56px - 50px);
+}
+
+.column {
+  flex: 0 0 280px;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 18px * 2 - 56px - 50px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.col-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col-count {
+  flex: none;
+  min-width: 22px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-faint);
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 50px;
+}
+
+.col-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+  padding: 10px 0;
+}
+
+.kcard {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 11px;
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.12s;
+}
+
+.kcard:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.kc-key {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.3px;
+}
+
+.kc-summary {
+  margin: 5px 0 9px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kc-move {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
 .board-table {
   width: 100%;
   border-collapse: collapse;
