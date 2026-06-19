@@ -65,6 +65,58 @@ pub fn list_blocks_for_day(conn: &Connection, day: &str) -> Result<Vec<ActivityB
     Ok(blocks)
 }
 
+/// Recompute the `ticket_time` rollup for `day` from non-idle, keyed activity blocks.
+/// Deletes existing rows for the day, then inserts one summed row per ticket_key.
+pub fn recompute_ticket_time(conn: &Connection, day: &str) -> Result<()> {
+    conn.execute("DELETE FROM ticket_time WHERE day = ?1", [day])?;
+
+    // Read non-idle, keyed blocks for the day and sum durations in Rust
+    // (reusing ActivityBlock::duration_secs) rather than relying on SQL date math.
+    let mut stmt = conn.prepare(
+        "SELECT ticket_key, start, end FROM activity_blocks
+         WHERE substr(start, 1, 10) = ?1
+           AND is_idle = 0
+           AND ticket_key IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([day], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut totals: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for row in rows {
+        let (ticket_key, start, end) = row?;
+        let secs = (parse_ts(&end)? - parse_ts(&start)?).num_seconds().max(0);
+        *totals.entry(ticket_key).or_insert(0) += secs;
+    }
+
+    let mut insert = conn.prepare(
+        "INSERT INTO ticket_time (day, ticket_key, worked_secs) VALUES (?1, ?2, ?3)",
+    )?;
+    for (ticket_key, worked_secs) in totals {
+        insert.execute(rusqlite::params![day, ticket_key, worked_secs])?;
+    }
+    Ok(())
+}
+
+/// Read the ticket_time rollup for `day` as (ticket_key, worked_secs) pairs.
+pub fn get_ticket_time(conn: &Connection, day: &str) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT ticket_key, worked_secs FROM ticket_time WHERE day = ?1 ORDER BY ticket_key",
+    )?;
+    let rows = stmt.query_map([day], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +179,101 @@ mod tests {
             Some("JIRA-1234".to_string())
         );
         assert_eq!(ticket_key_for(&conn, "Slack"), None);
+    }
+
+    #[test]
+    fn recompute_ticket_time_sums_and_excludes() {
+        let conn = open(":memory:").unwrap();
+
+        // ABC-1: two blocks -> 600 + 300 = 900s
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 first".into(),
+                start: ts("2026-06-18T09:00:00Z"),
+                end: ts("2026-06-18T09:10:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 second".into(),
+                start: ts("2026-06-18T11:00:00Z"),
+                end: ts("2026-06-18T11:05:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        // XY-2: one block -> 120s
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Editor".into(),
+                title: "XY-2 work".into(),
+                start: ts("2026-06-18T12:00:00Z"),
+                end: ts("2026-06-18T12:02:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        // Idle block with a key -> excluded.
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 idle".into(),
+                start: ts("2026-06-18T13:00:00Z"),
+                end: ts("2026-06-18T13:30:00Z"),
+                is_idle: true,
+            },
+        )
+        .unwrap();
+        // No-key block -> excluded.
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Slack".into(),
+                title: "Slack".into(),
+                start: ts("2026-06-18T14:00:00Z"),
+                end: ts("2026-06-18T14:30:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+
+        recompute_ticket_time(&conn, "2026-06-18").unwrap();
+
+        let mut got = get_ticket_time(&conn, "2026-06-18").unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("ABC-1".to_string(), 900), ("XY-2".to_string(), 120)]
+        );
+    }
+
+    #[test]
+    fn recompute_ticket_time_is_idempotent() {
+        let conn = open(":memory:").unwrap();
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 work".into(),
+                start: ts("2026-06-18T09:00:00Z"),
+                end: ts("2026-06-18T09:10:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+
+        recompute_ticket_time(&conn, "2026-06-18").unwrap();
+        recompute_ticket_time(&conn, "2026-06-18").unwrap();
+
+        let got = get_ticket_time(&conn, "2026-06-18").unwrap();
+        assert_eq!(got, vec![("ABC-1".to_string(), 600)]);
     }
 }
