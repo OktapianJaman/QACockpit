@@ -181,15 +181,43 @@ function renderHeader(h: DashboardHeader): void {
   $("hdr-worktime").textContent = formatSecs(h.net_work_secs);
 }
 
+/** Minimal, safe markdown → HTML: escapes first, then **bold**, *italic*,
+ *  `code`, and paragraph/line breaks. */
+function mdToHtml(raw: string): string {
+  let s = esc(raw);
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  s = s.replace(/\n{2,}/g, "</p><p>");
+  s = s.replace(/\n/g, "<br>");
+  return `<p>${s}</p>`;
+}
+
 function renderAiSummary(text: string): void {
   const el = $("ai-summary");
   if (text && text.trim()) {
-    el.textContent = text;
+    el.innerHTML = mdToHtml(text);
     el.classList.remove("empty");
   } else {
     el.textContent = 'Belum ada ringkasan. Klik "Buat ringkasan" buat bikin.';
     el.classList.add("empty");
   }
+}
+
+/** Animated placeholder shown while Gemma is composing the summary. */
+function showAiSkeleton(): void {
+  const el = $("ai-summary");
+  el.classList.remove("empty");
+  el.innerHTML = `
+    <div class="ai-loading">
+      <span class="spinner"></span>
+      <span>Menyusun ringkasan… (model lokal, bisa agak lama)</span>
+    </div>
+    <div class="skeleton-lines">
+      <div class="sk-line"></div>
+      <div class="sk-line"></div>
+      <div class="sk-line short"></div>
+    </div>`;
 }
 
 function renderTickets(tickets: TicketRow[]): void {
@@ -455,12 +483,10 @@ async function onTicketCorrection(blockIds: number[], ticketKey: string): Promis
 
 async function generateAi(): Promise<void> {
   const btn = $<HTMLButtonElement>("ai-btn");
-  const el = $("ai-summary");
   btn.disabled = true;
   const prevLabel = btn.textContent;
   btn.textContent = "Menyusun…";
-  el.textContent = "Menyusun ringkasan… (ini bisa agak lama)";
-  el.classList.add("empty");
+  showAiSkeleton();
   try {
     await invoke<string>("generate_ai_summary", { day: currentDay });
     await loadDashboard();

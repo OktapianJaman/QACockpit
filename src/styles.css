@@ -314,15 +314,86 @@ h2 {
 /* ---------------- AI summary ---------------- */
 
 .ai-summary {
-  white-space: pre-wrap;
   font-size: 13.5px;
   line-height: 1.6;
   color: var(--text);
 }
 
 .ai-summary.empty {
+  white-space: pre-wrap;
   font-style: italic;
   color: var(--text-faint);
+}
+
+.ai-summary p {
+  margin: 0 0 10px;
+}
+.ai-summary p:last-child {
+  margin-bottom: 0;
+}
+.ai-summary strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.ai-summary code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg-elev2, #1b1f27);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* AI loading state */
+.ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-faint);
+  margin-bottom: 12px;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border, #2a2f3a);
+  border-top-color: var(--accent, #6ea8fe);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sk-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev2, #1b1f27) 25%,
+    var(--border, #2a2f3a) 37%,
+    var(--bg-elev2, #1b1f27) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+.sk-line.short {
+  width: 60%;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
 }
 
 /* ---------------- Ticket table ---------------- */
