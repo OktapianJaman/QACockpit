@@ -328,10 +328,12 @@ function renderRecorderBtn(): void {
   const label = $("rec-label");
   const btn = $("rec-btn");
   if (recording) {
-    label.textContent = "● REC";
+    // Currently recording → clicking will STOP. Show a live indicator + the action.
+    label.textContent = "● Merekam — Stop";
     btn.classList.add("recording");
   } else {
-    label.textContent = "○ Berhenti";
+    // Currently stopped → clicking will START.
+    label.textContent = "▶ Mulai Rekam";
     btn.classList.remove("recording");
   }
 }
