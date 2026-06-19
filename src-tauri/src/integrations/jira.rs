@@ -355,6 +355,37 @@ pub fn do_transition(
     Ok(())
 }
 
+/// Set (or clear) a ticket's story points via the configured custom field.
+/// `points = None` clears it. Thin HTTP wrapper; not unit-tested.
+pub fn update_story_points(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    issue_key: &str,
+    field: &str,
+    points: Option<f64>,
+) -> Result<()> {
+    let url = format!(
+        "{}/rest/api/3/issue/{}",
+        base_url.trim_end_matches('/'),
+        issue_key
+    );
+    let value = match points {
+        Some(p) => serde_json::json!(p),
+        None => serde_json::Value::Null,
+    };
+    let body = serde_json::json!({ "fields": { field: value } });
+    let client = reqwest::blocking::Client::new();
+    client
+        .put(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .json(&body)
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+
 pub fn fetch_my_issues(
     base_url: &str,
     email: &str,

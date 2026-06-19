@@ -666,6 +666,67 @@ pub fn transition_issue(
     .map_err(|e| e.to_string())
 }
 
+/// A ticket card for the Kanban board.
+#[derive(Debug, Serialize)]
+pub struct BoardTicket {
+    pub key: String,
+    pub summary: String,
+    pub status: String,
+    pub story_points: Option<f64>,
+}
+
+#[tauri::command]
+pub fn list_board_tickets(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<BoardTicket>, String> {
+    let conn = state.conn()?;
+    let mut stmt = conn
+        .prepare("SELECT key, summary, status, story_points FROM jira_tickets ORDER BY key")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(BoardTicket {
+                key: row.get::<_, String>(0)?,
+                summary: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                status: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                story_points: row.get::<_, Option<f64>>(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn set_story_points(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    points: Option<f64>,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    integrations::jira::update_story_points(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &key,
+        &cfg.jira_story_point_field,
+        points,
+    )
+    .map_err(|e| e.to_string())?;
+    // Reflect locally so the board updates without a full re-sync.
+    conn.execute(
+        "UPDATE jira_tickets SET story_points = ?1 WHERE key = ?2",
+        rusqlite::params![points, key],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
