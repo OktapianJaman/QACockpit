@@ -1,5 +1,6 @@
 mod core;
 mod db;
+mod integrations;
 mod recorder;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
