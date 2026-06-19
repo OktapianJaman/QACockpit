@@ -15,14 +15,17 @@ pub fn open(path: &str) -> Result<Connection> {
 /// Insert one activity block, deriving and storing its Jira ticket_key from the title.
 pub fn insert_block(conn: &Connection, block: &ActivityBlock) -> Result<()> {
     let ticket_key = extract_ticket_key(&block.title);
+    // Store timestamps in LOCAL time so the stored date prefix (substr 1,10)
+    // matches the user's local calendar day. The offset is preserved in the
+    // RFC3339 string, so reading back as UTC still round-trips exactly.
     conn.execute(
         "INSERT INTO activity_blocks (app, title, start, end, is_idle, ticket_key)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             block.app,
             block.title,
-            block.start.to_rfc3339(),
-            block.end.to_rfc3339(),
+            block.start.with_timezone(&chrono::Local).to_rfc3339(),
+            block.end.with_timezone(&chrono::Local).to_rfc3339(),
             block.is_idle as i64,
             ticket_key,
         ],
@@ -121,10 +124,20 @@ pub fn get_ticket_time(conn: &Connection, day: &str) -> Result<Vec<(String, i64)
 mod tests {
     use super::*;
     use crate::core::types::ActivityBlock;
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 
+    /// Build a UTC timestamp from a wall-clock string interpreted in the LOCAL
+    /// timezone. Because blocks are now stored in local time, this makes the
+    /// stored date prefix equal the date in `s` regardless of the machine's
+    /// timezone, keeping `list_blocks_for_day` assertions deterministic in CI.
     fn ts(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+        let s = s.trim_end_matches('Z');
+        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").unwrap();
+        chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .expect("unambiguous local time")
+            .with_timezone(&Utc)
     }
 
     fn ticket_key_for(conn: &rusqlite::Connection, title: &str) -> Option<String> {
