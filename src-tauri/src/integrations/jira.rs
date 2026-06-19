@@ -422,11 +422,37 @@ pub fn fetch_my_issues(
 // Posting QA test results back to Jira as a comment (ADF table)
 // ---------------------------------------------------------------------------
 
+/// One test-case result destined for the ADF table. `status` is the raw db
+/// value ("passed" | "failed" | anything else = untested); `notes` is the
+/// optional free-text actual-result remark (empty = omitted).
+#[derive(Debug, Clone)]
+pub struct ResultRow {
+    pub title: String,
+    pub status: String,
+    pub notes: String,
+}
+
+/// Map a raw status to a `status` lozenge (label, color) per Jira's ADF schema.
+/// Colors are from the fixed ADF palette: green/red/neutral.
+fn status_lozenge(status: &str) -> (&'static str, &'static str) {
+    match status {
+        "passed" => ("PASS", "green"),
+        "failed" => ("FAIL", "red"),
+        _ => ("UNTESTED", "neutral"),
+    }
+}
+
 /// Build an Atlassian Document Format (ADF) comment body for QA test results:
-/// a level-3 heading, a summary paragraph, then a table whose first row is a
-/// header (No / Test Case / Hasil) followed by one body row per `rows` entry
-/// (`(title, result_label)`). Each cell's text is wrapped in a paragraph node.
-pub fn build_results_adf(summary_line: &str, rows: &[(String, String)]) -> Value {
+/// a level-3 `heading`, a colored `panel` summary, then a compact 3-column
+/// `table` (No / Test Case / Hasil & Catatan). The result cell carries an inline
+/// `status` lozenge; any note is folded UNDERNEATH it (hardBreak + text) in the
+/// same paragraph, keeping the table to 3 columns.
+pub fn build_results_adf(
+    heading: &str,
+    panel_type: &str,
+    panel_text: &str,
+    rows: &[ResultRow],
+) -> Value {
     // A paragraph node wrapping a single text run.
     let para = |text: &str| {
         serde_json::json!({
@@ -441,26 +467,47 @@ pub fn build_results_adf(summary_line: &str, rows: &[(String, String)]) -> Value
             "content": [para(text)]
         })
     };
-    let body_cell = |text: &str| {
+    // A body cell wrapping arbitrary content nodes (usually a single paragraph).
+    let cell = |content: Vec<Value>| {
         serde_json::json!({
             "type": "tableCell",
             "attrs": {},
-            "content": [para(text)]
+            "content": content
         })
     };
 
     let mut table_rows: Vec<Value> = Vec::with_capacity(rows.len() + 1);
     table_rows.push(serde_json::json!({
         "type": "tableRow",
-        "content": [header_cell("No"), header_cell("Test Case"), header_cell("Hasil")]
+        "content": [
+            header_cell("No"),
+            header_cell("Test Case"),
+            header_cell("Hasil & Catatan"),
+        ]
     }));
-    for (i, (title, result)) in rows.iter().enumerate() {
+    for (i, r) in rows.iter().enumerate() {
+        let (label, color) = status_lozenge(&r.status);
+        // The 3rd cell's paragraph: an inline `status` lozenge, optionally
+        // followed by a hardBreak + the note text (same paragraph).
+        let mut result_inline: Vec<Value> = vec![serde_json::json!({
+            "type": "status",
+            "attrs": { "text": label, "color": color }
+        })];
+        if !r.notes.trim().is_empty() {
+            result_inline.push(serde_json::json!({ "type": "hardBreak" }));
+            result_inline.push(serde_json::json!({ "type": "text", "text": r.notes }));
+        }
+        let result_para = serde_json::json!({
+            "type": "paragraph",
+            "content": result_inline
+        });
+
         table_rows.push(serde_json::json!({
             "type": "tableRow",
             "content": [
-                body_cell(&(i + 1).to_string()),
-                body_cell(title),
-                body_cell(result),
+                cell(vec![para(&(i + 1).to_string())]),
+                cell(vec![para(&r.title)]),
+                cell(vec![result_para]),
             ]
         }));
     }
@@ -472,10 +519,21 @@ pub fn build_results_adf(summary_line: &str, rows: &[(String, String)]) -> Value
             {
                 "type": "heading",
                 "attrs": { "level": 3 },
-                "content": [{ "type": "text", "text": "🧪 Hasil Test QA" }]
+                "content": [{ "type": "text", "text": heading }]
             },
-            para(summary_line),
-            { "type": "table", "content": table_rows }
+            {
+                "type": "panel",
+                "attrs": { "panelType": panel_type },
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": panel_text }]
+                }]
+            },
+            {
+                "type": "table",
+                "attrs": { "isNumberColumnEnabled": false, "layout": "default" },
+                "content": table_rows
+            }
         ]
     })
 }
@@ -512,17 +570,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_results_adf_has_heading_summary_and_table() {
+    fn build_results_adf_has_heading_panel_and_status_table() {
         let rows = vec![
-            ("Login valid".to_string(), "✅ Pass".to_string()),
-            ("Login invalid".to_string(), "❌ Fail".to_string()),
+            ResultRow {
+                title: "Login valid".to_string(),
+                status: "passed".to_string(),
+                notes: String::new(),
+            },
+            ResultRow {
+                title: "Login invalid".to_string(),
+                status: "failed".to_string(),
+                notes: "Muncul 500, bukan pesan error".to_string(),
+            },
         ];
-        let doc = build_results_adf("2 test case · 1 ✅ · 1 ❌", &rows);
+        let doc = build_results_adf(
+            "🧪 Hasil Test QA — QAT-3444 · 19 Jun 2026 · okta@tr8.io",
+            "error",
+            "1 test case GAGAL dari 2",
+            &rows,
+        );
 
         assert_eq!(doc["type"], "doc");
         let content = doc["content"].as_array().unwrap();
-        // heading + summary paragraph + table.
+        // heading first.
         assert_eq!(content[0]["type"], "heading");
+        assert_eq!(content[0]["attrs"]["level"], 3);
+
+        // A panel node with the requested panelType exists.
+        let panel = content
+            .iter()
+            .find(|n| n["type"] == "panel")
+            .expect("panel node present");
+        assert_eq!(panel["attrs"]["panelType"], "error");
+        assert_eq!(
+            panel["content"][0]["content"][0]["text"],
+            "1 test case GAGAL dari 2"
+        );
 
         // Find the table node.
         let table = content
@@ -533,21 +616,35 @@ mod tests {
         // 1 header row + 2 body rows.
         assert_eq!(trows.len(), 3);
 
-        // Header row has 3 header cells.
+        // Header row has 3 header cells; 3rd is "Hasil & Catatan".
         let header = trows[0]["content"].as_array().unwrap();
         assert_eq!(header.len(), 3);
         assert_eq!(header[0]["type"], "tableHeader");
+        assert_eq!(
+            header[2]["content"][0]["content"][0]["text"],
+            "Hasil & Catatan"
+        );
 
         // A body cell's text matches (row 1, second cell = title).
         assert_eq!(
             trows[1]["content"][1]["content"][0]["content"][0]["text"],
             "Login valid"
         );
-        // Result cell carries the emoji label.
-        assert_eq!(
-            trows[2]["content"][2]["content"][0]["content"][0]["text"],
-            "❌ Fail"
-        );
+
+        // Row 1 result cell contains a `status` lozenge with text "PASS".
+        let pass_status = &trows[1]["content"][2]["content"][0]["content"][0];
+        assert_eq!(pass_status["type"], "status");
+        assert_eq!(pass_status["attrs"]["text"], "PASS");
+        assert_eq!(pass_status["attrs"]["color"], "green");
+
+        // Row 2 result cell: FAIL lozenge + hardBreak + the note text.
+        let fail_inline = trows[2]["content"][2]["content"][0]["content"]
+            .as_array()
+            .unwrap();
+        assert_eq!(fail_inline[0]["type"], "status");
+        assert_eq!(fail_inline[0]["attrs"]["text"], "FAIL");
+        assert_eq!(fail_inline[1]["type"], "hardBreak");
+        assert_eq!(fail_inline[2]["text"], "Muncul 500, bukan pesan error");
     }
 
     // --- fields fixture: GET /rest/api/3/field returns a JSON array ---

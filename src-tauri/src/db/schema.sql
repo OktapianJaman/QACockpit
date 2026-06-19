@@ -57,5 +57,6 @@ CREATE TABLE IF NOT EXISTS test_cases (
     steps TEXT,
     expected TEXT,
     status TEXT NOT NULL DEFAULT 'untested',
-    created_at TEXT
+    created_at TEXT,
+    notes TEXT
 );

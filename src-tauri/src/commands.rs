@@ -763,6 +763,16 @@ pub fn set_test_case_status(
 }
 
 #[tauri::command]
+pub fn set_test_case_notes(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    notes: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::set_test_case_notes(&conn, id, &notes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn update_test_case(
     state: tauri::State<'_, AppState>,
     id: i64,
@@ -850,34 +860,47 @@ pub fn post_test_results(
         return Err("Belum ada test case buat dikirim".into());
     }
 
-    let mut rows: Vec<(String, String)> = Vec::with_capacity(cases.len());
-    let (mut p, mut f, mut u) = (0usize, 0usize, 0usize);
+    // Counts drive both the panel color/text and the (returned) toast line.
+    let total = cases.len();
+    let (mut passed, mut failed, mut untested) = (0usize, 0usize, 0usize);
+    let mut rows: Vec<integrations::jira::ResultRow> = Vec::with_capacity(total);
     for c in &cases {
-        let label = match c.status.as_str() {
-            "passed" => {
-                p += 1;
-                "✅ Pass"
-            }
-            "failed" => {
-                f += 1;
-                "❌ Fail"
-            }
-            _ => {
-                u += 1;
-                "⬜ Untested"
-            }
-        };
-        rows.push((c.title.clone(), label.to_string()));
+        match c.status.as_str() {
+            "passed" => passed += 1,
+            "failed" => failed += 1,
+            _ => untested += 1,
+        }
+        rows.push(integrations::jira::ResultRow {
+            title: c.title.clone(),
+            status: c.status.clone(),
+            notes: c.notes.clone(),
+        });
     }
-    let summary_line = format!(
-        "{} test case · {} ✅ Passed · {} ❌ Failed · {} ⬜ Untested",
-        cases.len(),
-        p,
-        f,
-        u
-    );
 
-    let adf = integrations::jira::build_results_adf(&summary_line, &rows);
+    // Panel: error if anything failed; success if all run + at least one pass;
+    // info otherwise (e.g. some still untested).
+    let panel_type = if failed > 0 {
+        "error"
+    } else if untested == 0 && passed > 0 {
+        "success"
+    } else {
+        "info"
+    };
+    let panel_text = match panel_type {
+        "success" => format!("Semua PASS — {passed}/{total} test case"),
+        "error" => format!("{failed} test case GAGAL dari {total}"),
+        _ => format!("{passed} pass · {failed} fail · {untested} belum dites"),
+    };
+
+    let date = chrono::Local::now().format("%d %b %Y").to_string();
+    let tester = if cfg.jira_email.is_empty() {
+        "QA".to_string()
+    } else {
+        cfg.jira_email.clone()
+    };
+    let heading = format!("🧪 Hasil Test QA — {key} · {date} · {tester}");
+
+    let adf = integrations::jira::build_results_adf(&heading, panel_type, &panel_text, &rows);
     integrations::jira::add_comment(
         &cfg.jira_base_url,
         &cfg.jira_email,
@@ -886,7 +909,7 @@ pub fn post_test_results(
         &adf,
     )
     .map_err(|e| e.to_string())?;
-    Ok(summary_line)
+    Ok(panel_text)
 }
 
 // ---------------------------------------------------------------------------

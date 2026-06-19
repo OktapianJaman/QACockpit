@@ -14,6 +14,7 @@ pub struct TestCase {
     pub steps: String,
     pub expected: String,
     pub status: String,
+    pub notes: String,
 }
 
 /// Open (or create) the SQLite database at `path` and apply the schema.
@@ -21,6 +22,10 @@ pub struct TestCase {
 pub fn open(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(include_str!("schema.sql"))?;
+    // Migration for DBs created before `notes` existed: schema.sql only runs
+    // CREATE TABLE IF NOT EXISTS, so an existing `test_cases` table won't gain
+    // the column. ALTER ... ADD COLUMN errors if it already exists; swallow it.
+    let _ = conn.execute("ALTER TABLE test_cases ADD COLUMN notes TEXT", []);
     Ok(conn)
 }
 
@@ -238,7 +243,7 @@ pub fn add_test_case(
 /// List all test cases for a ticket, ordered by id.
 pub fn list_test_cases(conn: &Connection, ticket_key: &str) -> Result<Vec<TestCase>> {
     let mut stmt = conn.prepare(
-        "SELECT id, ticket_key, title, steps, expected, status FROM test_cases
+        "SELECT id, ticket_key, title, steps, expected, status, notes FROM test_cases
          WHERE ticket_key = ?1
          ORDER BY id",
     )?;
@@ -250,6 +255,7 @@ pub fn list_test_cases(conn: &Connection, ticket_key: &str) -> Result<Vec<TestCa
             steps: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
             expected: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             status: row.get(5)?,
+            notes: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
         })
     })?;
     let mut out = Vec::new();
@@ -264,6 +270,15 @@ pub fn set_test_case_status(conn: &Connection, id: i64, status: &str) -> Result<
     conn.execute(
         "UPDATE test_cases SET status = ?1 WHERE id = ?2",
         rusqlite::params![status, id],
+    )?;
+    Ok(())
+}
+
+/// Update a single test case's free-text notes (actual result / remark).
+pub fn set_test_case_notes(conn: &Connection, id: i64, notes: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE test_cases SET notes = ?1 WHERE id = ?2",
+        rusqlite::params![notes, id],
     )?;
     Ok(())
 }
@@ -529,7 +544,15 @@ mod tests {
         assert_eq!(cases[0].expected, "Masuk ke dashboard");
         // Default status.
         assert_eq!(cases[0].status, "untested");
+        // Notes default to empty.
+        assert_eq!(cases[0].notes, "");
         assert_eq!(cases[1].title, "Login invalid");
+
+        // Notes round-trip.
+        set_test_case_notes(&conn, id1, "Aktual: muncul 500, bukan dashboard").unwrap();
+        let cases = list_test_cases(&conn, "QAT-1").unwrap();
+        assert_eq!(cases[0].notes, "Aktual: muncul 500, bukan dashboard");
+        assert_eq!(cases[1].notes, "");
 
         // A different ticket has no cases.
         assert!(list_test_cases(&conn, "QAT-2").unwrap().is_empty());

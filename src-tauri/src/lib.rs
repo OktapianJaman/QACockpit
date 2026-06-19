@@ -72,6 +72,7 @@ pub fn run() {
             commands::list_test_cases,
             commands::add_test_case,
             commands::set_test_case_status,
+            commands::set_test_case_notes,
             commands::update_test_case,
             commands::delete_test_case,
             commands::generate_test_cases,
