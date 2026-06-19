@@ -400,6 +400,15 @@ h2 {
 
 .table-wrap {
   overflow-x: auto;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.ticket-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev, #14181f);
+  z-index: 1;
 }
 
 .ticket-table {
@@ -477,6 +486,12 @@ h2 {
   background: rgba(251, 191, 36, 0.14);
   color: var(--yellow);
   border-color: rgba(251, 191, 36, 0.35);
+}
+
+.chip-untracked {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-faint, #94a3b8);
+  border-color: rgba(148, 163, 184, 0.28);
 }
 
 /* ---------------- Timeline ---------------- */

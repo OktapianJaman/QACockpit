@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 // snake_case Rust field names, so match them exactly).
 // ---------------------------------------------------------------------------
 
-type Fairness = "Fair" | "UnderPointed" | "OverPointed";
+type Fairness = "Fair" | "UnderPointed" | "OverPointed" | "Untracked";
 
 interface DashboardHeader {
   deserved_total: number;
@@ -167,6 +167,8 @@ function statusChip(f: Fairness): ChipInfo {
       return { cls: "under", emoji: "🔴", label: "Kurang poin" };
     case "OverPointed":
       return { cls: "over", emoji: "🟡", label: "Lebih poin" };
+    case "Untracked":
+      return { cls: "untracked", emoji: "⚪", label: "Belum dikerjain" };
   }
 }
 
@@ -251,12 +253,15 @@ function renderTickets(tickets: TicketRow[]): void {
   body.innerHTML = tickets
     .map((t) => {
       const chip = statusChip(t.fairness);
+      const untracked = t.fairness === "Untracked";
+      const jam = untracked ? "—" : esc(formatSecs(t.worked_secs));
+      const harusnya = untracked ? "—" : esc(fmtPoints(t.deserved));
       return `
         <tr class="row-${chip.cls}">
           <td class="mono">${esc(t.key)}</td>
           <td class="ellipsis" title="${esc(t.summary)}">${esc(t.summary || "—")}</td>
-          <td class="num">${esc(formatSecs(t.worked_secs))}</td>
-          <td class="num">${esc(fmtPoints(t.deserved))}</td>
+          <td class="num">${jam}</td>
+          <td class="num">${harusnya}</td>
           <td class="num">${t.story_points == null ? "—" : esc(fmtPoints(t.assigned))}</td>
           <td><span class="chip chip-${chip.cls}">${chip.emoji} ${chip.label}</span></td>
         </tr>`;
@@ -615,6 +620,17 @@ async function openSettings(): Promise<void> {
     toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
   }
   show($("settings-overlay"), true);
+
+  // Auto-load the Jira dropdowns if creds are present, so the user doesn't have
+  // to click "Muat dari Jira" every time they open Settings.
+  try {
+    const cfg = await invoke<AppConfig>("get_config");
+    if (cfg.jira_base_url && cfg.jira_email && cfg.jira_token) {
+      await loadFromJira();
+    }
+  } catch {
+    /* seeded values remain; ignore */
+  }
 }
 
 function closeSettings(): void {

@@ -156,6 +156,48 @@ fn fairness_label(f: &Fairness) -> &'static str {
     }
 }
 
+/// Build a TicketRow, assessing fairness only when there's logged time;
+/// untouched tickets get worked 0 and the "Untracked" status and do NOT
+/// contribute to the day's worked/assigned totals.
+#[allow(clippy::too_many_arguments)]
+fn make_ticket_row(
+    key: String,
+    summary: String,
+    status: String,
+    story_points: Option<f64>,
+    worked_secs: i64,
+    worked_total: &mut i64,
+    assigned_total: &mut f64,
+) -> TicketRow {
+    let assigned = story_points.unwrap_or(0.0);
+    if worked_secs > 0 {
+        let a = assess(worked_secs, assigned);
+        *worked_total += worked_secs;
+        *assigned_total += assigned;
+        TicketRow {
+            key,
+            summary,
+            status,
+            story_points,
+            worked_secs,
+            deserved: a.deserved,
+            assigned: a.assigned,
+            fairness: fairness_label(&a.status).to_string(),
+        }
+    } else {
+        TicketRow {
+            key,
+            summary,
+            status,
+            story_points,
+            worked_secs: 0,
+            deserved: 0.0,
+            assigned,
+            fairness: "Untracked".to_string(),
+        }
+    }
+}
+
 /// Look up a jira ticket's (summary, status, story_points) by key, if known.
 fn lookup_jira(conn: &Connection, key: &str) -> (String, String, Option<f64>) {
     conn.query_row(
@@ -177,28 +219,67 @@ fn lookup_jira(conn: &Connection, key: &str) -> (String, String, Option<f64>) {
 pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String> {
     let map = |e: anyhow::Error| e.to_string();
 
-    // --- ticket rows from the per-day rollup ---
-    let ticket_time = db::get_ticket_time(conn, day).map_err(map)?;
-    let mut tickets = Vec::with_capacity(ticket_time.len());
+    // --- ticket rows: ALL assigned/synced tickets, with today's worked time
+    //     merged in. Tickets without logged time show worked_secs 0 and the
+    //     "Untracked" status; only worked tickets contribute to the header. ---
+    let worked: std::collections::HashMap<String, i64> =
+        db::get_ticket_time(conn, day).map_err(map)?.into_iter().collect();
+
+    // Pull every synced ticket once (key + summary + status + story points).
+    let mut jstmt = conn
+        .prepare("SELECT key, summary, status, story_points FROM jira_tickets")
+        .map_err(|e| e.to_string())?;
+    let jrows = jstmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<f64>>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut tickets: Vec<TicketRow> = Vec::new();
     let mut worked_total: i64 = 0;
     let mut assigned_total: f64 = 0.0;
-    for (key, worked_secs) in ticket_time {
-        let (summary, status, story_points) = lookup_jira(conn, &key);
-        let assigned = story_points.unwrap_or(0.0);
-        let a = assess(worked_secs, assigned);
-        worked_total += worked_secs;
-        assigned_total += assigned;
-        tickets.push(TicketRow {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for r in jrows {
+        let (key, summary, status, story_points) = r.map_err(|e| e.to_string())?;
+        seen.insert(key.clone());
+        let worked_secs = worked.get(&key).copied().unwrap_or(0);
+        tickets.push(make_ticket_row(
             key,
             summary,
             status,
             story_points,
             worked_secs,
-            deserved: a.deserved,
-            assigned: a.assigned,
-            fairness: fairness_label(&a.status).to_string(),
-        });
+            &mut worked_total,
+            &mut assigned_total,
+        ));
     }
+    // Include any worked ticket that isn't in the synced set (e.g. a ticket key
+    // seen in a window title but not pulled from Jira).
+    for (key, worked_secs) in &worked {
+        if !seen.contains(key) {
+            let (summary, status, story_points) = lookup_jira(conn, key);
+            tickets.push(make_ticket_row(
+                key.clone(),
+                summary,
+                status,
+                story_points,
+                *worked_secs,
+                &mut worked_total,
+                &mut assigned_total,
+            ));
+        }
+    }
+    // Worked tickets first (most time on top), then untouched tickets by key.
+    tickets.sort_by(|a, b| {
+        b.worked_secs
+            .cmp(&a.worked_secs)
+            .then_with(|| a.key.cmp(&b.key))
+    });
 
     let header = DashboardHeader {
         deserved_total: deserved_points(worked_total),
