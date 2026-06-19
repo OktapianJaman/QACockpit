@@ -487,7 +487,8 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
   if (!ok) return;
   try {
     // Tauri maps snake_case command params (transition_id) to camelCase.
-    await invoke("transition_issue", { key, transitionId: t.id });
+    // Pass to_status so the local DB mirror updates → board reflects it.
+    await invoke("transition_issue", { key, transitionId: t.id, toStatus: target });
     toast(`Status ${key} diubah.`);
     await refreshBoard();
   } catch (e) {

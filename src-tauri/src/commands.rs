@@ -652,6 +652,7 @@ pub fn transition_issue(
     state: tauri::State<'_, AppState>,
     key: String,
     transition_id: String,
+    to_status: String,
 ) -> Result<(), String> {
     let conn = state.conn()?;
     let cfg = load_config(&conn)?;
@@ -663,7 +664,17 @@ pub fn transition_issue(
         &key,
         &transition_id,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // Reflect the new status locally so the board updates on Refresh without a
+    // full re-Sync. (Jira is the source of truth; this is an optimistic mirror.)
+    if !to_status.trim().is_empty() {
+        conn.execute(
+            "UPDATE jira_tickets SET status = ?1 WHERE key = ?2",
+            rusqlite::params![to_status, key],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// A ticket card for the Kanban board.
