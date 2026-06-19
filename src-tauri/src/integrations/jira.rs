@@ -248,7 +248,10 @@ pub fn fetch_my_issues(
     assignee: &str,
 ) -> Result<Vec<JiraTicket>> {
     let fields = format!("summary,status,updated,{}", story_point_field);
-    let url = format!("{}/rest/api/3/search", base_url.trim_end_matches('/'));
+    // The legacy /rest/api/3/search endpoint was removed by Atlassian (returns
+    // 410 Gone since mid-2025); the enhanced-JQL endpoint replaces it. The
+    // response still has an `issues[]` array, so `parse_issues` is unchanged.
+    let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
     let jql = build_jql(project, assignee);
     let client = reqwest::blocking::Client::new();
     let body = client
