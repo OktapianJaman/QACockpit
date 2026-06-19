@@ -751,3 +751,63 @@ h2 {
   gap: 10px;
   margin-top: 6px;
 }
+
+/* Confirm + pick-transition modals (reuse .overlay) */
+.confirm-panel {
+  width: 100%;
+  max-width: 380px;
+  box-shadow: var(--shadow);
+  margin: 0;
+}
+
+.confirm-panel p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.transition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.transition-list .btn {
+  justify-content: flex-start;
+  text-align: left;
+  width: 100%;
+}
+
+/* Small "shift status" button inside a ticket's status cell */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-cell .status-text {
+  flex: 1;
+}
+
+.btn-shift {
+  background: var(--bg-elev2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.btn-shift:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

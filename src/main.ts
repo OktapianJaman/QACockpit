@@ -75,6 +75,12 @@ interface JiraUser {
   display_name: string;
 }
 
+interface JiraTransition {
+  id: string;
+  name: string;
+  to_status: string;
+}
+
 interface AppConfig {
   jira_base_url: string;
   jira_email: string;
@@ -267,10 +273,23 @@ function renderTickets(tickets: TicketRow[]): void {
           <td class="num">${jam}</td>
           <td class="num">${harusnya}</td>
           <td class="num">${t.story_points == null ? "—" : esc(fmtPoints(t.assigned))}</td>
-          <td><span class="chip chip-${chip.cls}">${chip.emoji} ${chip.label}</span></td>
+          <td>
+            <div class="status-cell">
+              <span class="status-text" title="${esc(t.status)}">${esc(t.status || "—")}</span>
+              <button class="btn-shift" data-key="${esc(t.key)}" title="Geser status di Jira">⤳</button>
+            </div>
+          </td>
         </tr>`;
     })
     .join("");
+
+  // Wire each row's "shift status" button to the transition flow.
+  body.querySelectorAll<HTMLButtonElement>(".btn-shift").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.key ?? "";
+      if (key) void shiftStatus(key);
+    });
+  });
 }
 
 interface TimelineGroup {
@@ -512,6 +531,95 @@ async function onTicketCorrection(blockIds: number[], ticketKey: string): Promis
   } catch (e) {
     toast(`Gagal koreksi tiket: ${errStr(e)}`, "error");
     await loadDashboard();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Confirm dialog + Jira status transitions
+// ---------------------------------------------------------------------------
+
+// Resolver for the currently-open confirm dialog (window.confirm is unreliable
+// in Tauri, so we roll our own promise-based modal). Listeners wired once.
+let confirmResolve: ((ok: boolean) => void) | null = null;
+
+function settleConfirm(ok: boolean): void {
+  show($("confirm-overlay"), false);
+  const r = confirmResolve;
+  confirmResolve = null;
+  if (r) r(ok);
+}
+
+/** Show the confirm modal; resolves true on OK, false on Cancel/backdrop. */
+function confirmDialog(message: string): Promise<boolean> {
+  // If one is already open, cancel it first.
+  if (confirmResolve) settleConfirm(false);
+  $("confirm-msg").textContent = message;
+  show($("confirm-overlay"), true);
+  return new Promise<boolean>((resolve) => {
+    confirmResolve = resolve;
+  });
+}
+
+function closeTransitionPicker(): void {
+  show($("transition-overlay"), false);
+  $("transition-list").innerHTML = "";
+}
+
+/** Entry point from a ticket row's "⤳" button: fetch transitions and let the
+ *  user pick one, confirm, then perform it and re-sync. */
+async function shiftStatus(key: string): Promise<void> {
+  let trans: JiraTransition[];
+  try {
+    trans = await invoke<JiraTransition[]>("list_transitions", { key });
+  } catch (e) {
+    toast(`Gagal ambil transisi: ${errStr(e)}`, "error");
+    return;
+  }
+  if (trans.length === 0) {
+    toast(`Tidak ada transisi tersedia untuk ${key}.`);
+    return;
+  }
+  showTransitionPicker(key, trans);
+}
+
+/** Render the pick-transition modal with one button per transition. */
+function showTransitionPicker(key: string, trans: JiraTransition[]): void {
+  $("transition-title").textContent = `Geser status ${key}`;
+  const list = $("transition-list");
+  list.innerHTML = trans
+    .map(
+      (t, i) =>
+        `<button class="btn" data-idx="${i}">${esc(t.name)}${
+          t.to_status ? " → " + esc(t.to_status) : ""
+        }</button>`
+    )
+    .join("");
+  list.querySelectorAll<HTMLButtonElement>(".btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.idx);
+      const t = trans[idx];
+      if (t) void onPickTransition(key, t);
+    });
+  });
+  show($("transition-overlay"), true);
+}
+
+/** Confirm and perform a chosen transition, then re-sync the dashboard. */
+async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
+  closeTransitionPicker();
+  const target = t.to_status || t.name;
+  const ok = await confirmDialog(
+    `Geser ${key} ke "${target}"? Ini mengubah status di Jira beneran.`
+  );
+  if (!ok) return;
+  try {
+    // Tauri maps snake_case command params (transition_id) to camelCase.
+    await invoke("transition_issue", { key, transitionId: t.id });
+    toast(`Status ${key} diubah.`);
+    await doSync();
+    await loadDashboard();
+  } catch (e) {
+    toast(`Gagal ubah status: ${errStr(e)}`, "error");
   }
 }
 
@@ -787,6 +895,19 @@ function wireEvents(): void {
     void loadAssignees(project, current).catch((e) =>
       toast(`Gagal muat assignee: ${errStr(e)}`, "error")
     );
+  });
+
+  // Confirm modal (promise-based; resolves on OK/Cancel/backdrop).
+  $("confirm-ok").addEventListener("click", () => settleConfirm(true));
+  $("confirm-cancel").addEventListener("click", () => settleConfirm(false));
+  $("confirm-overlay").addEventListener("click", (e) => {
+    if (e.target === $("confirm-overlay")) settleConfirm(false);
+  });
+
+  // Pick-transition modal.
+  $("transition-close").addEventListener("click", closeTransitionPicker);
+  $("transition-overlay").addEventListener("click", (e) => {
+    if (e.target === $("transition-overlay")) closeTransitionPicker();
   });
 
   $("perm-dismiss").addEventListener("click", () => show($("perm-banner"), false));

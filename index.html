@@ -122,6 +122,28 @@
       </div>
     </main>
 
+    <!-- Pick-transition modal: lists available Jira transitions as buttons -->
+    <div id="transition-overlay" class="overlay hidden">
+      <div class="confirm-panel card">
+        <div class="card-head">
+          <h2 id="transition-title">Geser status</h2>
+          <button id="transition-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <div id="transition-list" class="transition-list"></div>
+      </div>
+    </div>
+
+    <!-- Generic confirm modal (used before any write to Jira) -->
+    <div id="confirm-overlay" class="overlay hidden">
+      <div class="confirm-panel card">
+        <p id="confirm-msg"></p>
+        <div class="confirm-actions">
+          <button id="confirm-cancel" class="btn">Batal</button>
+          <button id="confirm-ok" class="btn primary">Ya, lanjut</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings panel -->
     <div id="settings-overlay" class="overlay hidden">
       <div class="settings-panel card">
