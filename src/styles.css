@@ -702,7 +702,8 @@ h2 {
   color: var(--text-dim);
 }
 
-.settings-form input {
+.settings-form input,
+.settings-form select {
   background: var(--bg-elev2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -712,9 +713,17 @@ h2 {
   font-family: inherit;
 }
 
-.settings-form input:focus {
+.settings-form input:focus,
+.settings-form select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.jira-load-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .settings-actions {

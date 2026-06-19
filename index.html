@@ -139,14 +139,19 @@
           <label>Jira API Token
             <input type="password" id="cfg-jira_token" placeholder="••••••••" />
           </label>
+          <div class="jira-load-row">
+            <button type="button" id="jira-load-btn" class="btn small">Muat dari Jira</button>
+            <small class="field-hint">Isi Base URL, Email &amp; API Token dulu, lalu klik untuk memuat pilihan.</small>
+          </div>
           <label>Jira Story Point Field
-            <input type="text" id="cfg-jira_story_point_field" placeholder="customfield_10016" />
+            <select id="cfg-jira_story_point_field"></select>
+            <small id="jira-fields-hint" class="field-hint"></small>
           </label>
           <label>Project / Team Jira
-            <input type="text" id="cfg-jira_project" placeholder="QAT (kosongkan = semua project)" />
+            <select id="cfg-jira_project"></select>
           </label>
           <label>Assignee
-            <input type="text" id="cfg-jira_assignee" placeholder="kosongkan = tiket punya kamu sendiri" />
+            <select id="cfg-jira_assignee"></select>
           </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />

@@ -54,6 +54,21 @@ interface Dashboard {
   ai_summary: string;
 }
 
+interface JiraField {
+  id: string;
+  name: string;
+}
+
+interface JiraProject {
+  key: string;
+  name: string;
+}
+
+interface JiraUser {
+  account_id: string;
+  display_name: string;
+}
+
 interface AppConfig {
   jira_base_url: string;
   jira_email: string;
@@ -542,13 +557,53 @@ async function populateModelDropdown(current: string): Promise<void> {
   }
 }
 
+// The three Jira selects need their saved value shown even before "Muat dari
+// Jira" is clicked, so saving never loses it. They are excluded from the generic
+// loop (like gemma_model) and seeded by these helpers — an empty <select> must
+// have options before its value can be set.
+const JIRA_DROPDOWN_KEYS: (keyof AppConfig)[] = [
+  "jira_story_point_field",
+  "jira_project",
+  "jira_assignee",
+];
+
+const DEFAULT_STORY_POINT_FIELD = "customfield_10016";
+
+/** Seed the story-point-field select with just the saved id (so save round-trips). */
+function seedFieldDropdown(current: string): void {
+  const sel = $("cfg-jira_story_point_field") as HTMLSelectElement;
+  const id = current || DEFAULT_STORY_POINT_FIELD;
+  sel.innerHTML = `<option value="${esc(id)}" selected>${esc(id)}</option>`;
+}
+
+/** Seed the project select with an empty "(semua project)" + the saved key. */
+function seedProjectDropdown(current: string): void {
+  const sel = $("cfg-jira_project") as HTMLSelectElement;
+  const opts = [`<option value=""${current ? "" : " selected"}>(semua project)</option>`];
+  if (current) opts.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  sel.innerHTML = opts.join("");
+}
+
+/** Seed the assignee select with an empty "(kamu sendiri)" + the saved id. */
+function seedAssigneeDropdown(current: string): void {
+  const sel = $("cfg-jira_assignee") as HTMLSelectElement;
+  const opts = [`<option value=""${current ? "" : " selected"}>(kamu sendiri)</option>`];
+  if (current) opts.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  sel.innerHTML = opts.join("");
+}
+
 async function openSettings(): Promise<void> {
   try {
     const cfg = await invoke<AppConfig>("get_config");
     for (const k of CONFIG_KEYS) {
       if (k === "gemma_model") continue; // handled as a dropdown below
+      if (JIRA_DROPDOWN_KEYS.includes(k)) continue; // seeded via dedicated helpers
       ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
     }
+    seedFieldDropdown(cfg.jira_story_point_field ?? "");
+    seedProjectDropdown(cfg.jira_project ?? "");
+    seedAssigneeDropdown(cfg.jira_assignee ?? "");
+    $("jira-fields-hint").textContent = "";
     await populateModelDropdown(cfg.gemma_model ?? "");
   } catch (e) {
     toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
@@ -560,18 +615,104 @@ function closeSettings(): void {
   show($("settings-overlay"), false);
 }
 
-async function saveSettings(): Promise<void> {
+/** Read the settings form into an AppConfig (works for <input> and <select>). */
+function readConfigFromForm(): AppConfig {
   const cfg = {} as AppConfig;
   for (const k of CONFIG_KEYS) {
-    cfg[k] = ($(`cfg-${k}`) as HTMLInputElement).value.trim();
+    cfg[k] = ($(`cfg-${k}`) as HTMLInputElement | HTMLSelectElement).value.trim();
   }
-  if (!cfg.jira_story_point_field) cfg.jira_story_point_field = "customfield_10016";
+  if (!cfg.jira_story_point_field) cfg.jira_story_point_field = DEFAULT_STORY_POINT_FIELD;
+  return cfg;
+}
+
+async function saveSettings(): Promise<void> {
+  const cfg = readConfigFromForm();
   try {
     await invoke("set_config", { cfg });
     toast("Pengaturan tersimpan.");
     closeSettings();
   } catch (e) {
     toast(`Gagal simpan pengaturan: ${errStr(e)}`, "error");
+  }
+}
+
+/** Repopulate the assignee select for a given project (empty project → "kamu sendiri" only). */
+async function loadAssignees(project: string, current: string): Promise<void> {
+  const sel = $("cfg-jira_assignee") as HTMLSelectElement;
+  const users = await invoke<JiraUser[]>("list_jira_assignees", { project });
+  const opts = [`<option value=""${current ? "" : " selected"}>(kamu sendiri)</option>`];
+  let matched = false;
+  for (const u of users) {
+    const isSel = u.account_id === current;
+    if (isSel) matched = true;
+    opts.push(
+      `<option value="${esc(u.account_id)}"${isSel ? " selected" : ""}>${esc(u.display_name)}</option>`
+    );
+  }
+  // Keep a saved assignee that isn't in the (project-scoped) list selectable.
+  if (current && !matched) {
+    opts.push(`<option value="${esc(current)}" selected>${esc(current)}</option>`);
+  }
+  sel.innerHTML = opts.join("");
+}
+
+/** "Muat dari Jira": save creds first, then populate the 3 dropdowns from Jira. */
+async function loadFromJira(): Promise<void> {
+  const btn = $<HTMLButtonElement>("jira-load-btn");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Memuat…";
+  try {
+    // Persist the form so the backend has the latest creds before we fetch.
+    const cfg = readConfigFromForm();
+    await invoke("set_config", { cfg });
+
+    // --- Story point fields ---
+    const fields = await invoke<JiraField[]>("list_jira_fields");
+    const fieldSel = $("cfg-jira_story_point_field") as HTMLSelectElement;
+    const savedField = cfg.jira_story_point_field;
+    let fieldMatched = false;
+    const fieldOpts = fields.map((f) => {
+      const isSel = f.id === savedField;
+      if (isSel) fieldMatched = true;
+      return `<option value="${esc(f.id)}"${isSel ? " selected" : ""}>${esc(f.name)} (${esc(f.id)})</option>`;
+    });
+    if (savedField && !fieldMatched) {
+      fieldOpts.unshift(`<option value="${esc(savedField)}" selected>${esc(savedField)}</option>`);
+    }
+    fieldSel.innerHTML = fieldOpts.join("");
+    $("jira-fields-hint").textContent =
+      "Pilih field yang menyimpan story point (mis. Actual sprint point).";
+
+    // --- Projects ---
+    const projects = await invoke<JiraProject[]>("list_jira_projects");
+    const projSel = $("cfg-jira_project") as HTMLSelectElement;
+    const savedProject = cfg.jira_project;
+    const projOpts = [
+      `<option value=""${savedProject ? "" : " selected"}>(semua project)</option>`,
+    ];
+    let projMatched = false;
+    for (const p of projects) {
+      const isSel = p.key === savedProject;
+      if (isSel) projMatched = true;
+      projOpts.push(
+        `<option value="${esc(p.key)}"${isSel ? " selected" : ""}>${esc(p.key)} — ${esc(p.name)}</option>`
+      );
+    }
+    if (savedProject && !projMatched) {
+      projOpts.push(`<option value="${esc(savedProject)}" selected>${esc(savedProject)}</option>`);
+    }
+    projSel.innerHTML = projOpts.join("");
+
+    // --- Assignees (scoped to the currently-selected project) ---
+    await loadAssignees(projSel.value, cfg.jira_assignee);
+
+    toast("Pilihan dari Jira dimuat.");
+  } catch (e) {
+    toast(`Gagal muat dari Jira: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
   }
 }
 
@@ -610,6 +751,16 @@ function wireEvents(): void {
   });
   $("settings-overlay").addEventListener("click", (e) => {
     if (e.target === $("settings-overlay")) closeSettings();
+  });
+
+  $("jira-load-btn").addEventListener("click", () => void loadFromJira());
+  // When the project changes, reload assignees scoped to it (keep current pick).
+  $("cfg-jira_project").addEventListener("change", () => {
+    const project = ($("cfg-jira_project") as HTMLSelectElement).value;
+    const current = ($("cfg-jira_assignee") as HTMLSelectElement).value;
+    void loadAssignees(project, current).catch((e) =>
+      toast(`Gagal muat assignee: ${errStr(e)}`, "error")
+    );
   });
 
   $("perm-dismiss").addEventListener("click", () => show($("perm-banner"), false));
