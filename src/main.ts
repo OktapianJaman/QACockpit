@@ -308,6 +308,12 @@ function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
           ? `<option value="${esc(g.ticket_key)}" selected>${esc(g.ticket_key)}</option>`
           : "";
       const mins = Math.round(g.secs / 60);
+      // No tickets synced yet → nothing to assign; show a disabled hint instead
+      // of an empty, confusing dropdown.
+      const picker =
+        keys.length === 0
+          ? `<select class="tl-select" disabled title="Sambungkan Jira dulu untuk menempelkan tiket"><option>tiket?</option></select>`
+          : `<select class="tl-select" data-blocks="${g.ids.join(",")}" title="Tempelkan aktivitas ini ke tiket Jira">${opts}${extra}</select>`;
       return `
         <div class="tl-block${g.is_idle ? " idle" : ""}">
           <div class="tl-time">${esc(fmtTime(g.start))}–${esc(fmtTime(g.end))}</div>
@@ -320,9 +326,7 @@ function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
             </div>
             <div class="tl-meta">${mins}m</div>
           </div>
-          <select class="tl-select" data-blocks="${g.ids.join(",")}">
-            ${opts}${extra}
-          </select>
+          ${picker}
         </div>`;
     })
     .join("");
