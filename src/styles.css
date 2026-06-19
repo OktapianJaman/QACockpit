@@ -292,11 +292,35 @@ h2 {
   transform: translateY(-1px);
 }
 
+.kc-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
 .kc-key {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
   letter-spacing: 0.3px;
+}
+
+.kc-status {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
 }
 
 .kc-summary {

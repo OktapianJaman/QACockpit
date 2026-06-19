@@ -174,21 +174,35 @@ function pointsLabel(pts: number | null): string {
   return pts == null ? "— pts" : `${fmtPoints(pts)} pts`;
 }
 
-/** Distinct statuses present, ordered by the preferred sequence then alpha. */
-function orderedStatuses(tickets: BoardTicket[]): string[] {
-  return [...new Set(tickets.map((t) => t.status).filter(Boolean))].sort((a, b) => {
-    const r = statusRank(a) - statusRank(b);
-    return r !== 0 ? r : a.localeCompare(b);
-  });
+// Terminal/closed statuses collapse into a single "Done" column.
+const DONE_KEYWORDS = ["done", "passed", "closed", "complete", "resolved", "selesai"];
+
+/** Map a raw Jira status to its display column — terminal ones → "Done". */
+function displayColumn(status: string): string {
+  const s = status.toLowerCase();
+  return DONE_KEYWORDS.some((k) => s.includes(k)) ? "Done" : status;
+}
+
+/** Distinct DISPLAY columns present, ordered by preferred sequence then alpha. */
+function orderedColumns(tickets: BoardTicket[]): string[] {
+  return [...new Set(tickets.map((t) => displayColumn(t.status)).filter(Boolean))].sort(
+    (a, b) => {
+      const r = statusRank(a) - statusRank(b);
+      return r !== 0 ? r : a.localeCompare(b);
+    }
+  );
 }
 
 /** Build one card (click → detail; inline points; "pindah" → transition picker).
- *  No drag — WKWebView DnD is unreliable; status moves via the picker. */
+ *  Shows its real Jira status (since a column may merge several statuses). */
 function buildCard(t: BoardTicket): HTMLElement {
   const card = document.createElement("div");
   card.className = "kcard";
   card.innerHTML = `
-    <div class="kc-key mono">${esc(t.key)}</div>
+    <div class="kc-top">
+      <span class="kc-key mono">${esc(t.key)}</span>
+      <span class="kc-status">${esc(t.status)}</span>
+    </div>
     <div class="kc-summary">${esc(t.summary || "—")}</div>
     <div class="kc-foot">
       <button class="ct-points" type="button" title="Klik untuk ubah story point">${esc(
@@ -210,15 +224,15 @@ function buildCard(t: BoardTicket): HTMLElement {
   return card;
 }
 
-/** Build a column for one status, filled with its (filtered) cards. */
-function buildColumn(status: string, cards: BoardTicket[]): HTMLElement {
+/** Build a column for one display status. Header = UPPERCASE name + count/total. */
+function buildColumn(status: string, cards: BoardTicket[], total: number): HTMLElement {
   const col = document.createElement("section");
   col.className = "column";
   const head = document.createElement("div");
   head.className = "column-head";
   head.innerHTML = `
     <span class="col-name" title="${esc(status)}">${esc(status)}</span>
-    <span class="col-count">${cards.length}</span>`;
+    <span class="col-count">${cards.length}/${total}</span>`;
   col.appendChild(head);
   const body = document.createElement("div");
   body.className = "column-body";
@@ -293,11 +307,12 @@ function renderBoard(tickets: BoardTicket[]): void {
     !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q);
 
   board.innerHTML = "";
-  for (const status of orderedStatuses(tickets)) {
+  for (const col of orderedColumns(tickets)) {
     const cards = tickets
-      .filter((t) => t.status === status && match(t))
+      .filter((t) => displayColumn(t.status) === col && match(t))
       .sort((a, b) => a.key.localeCompare(b.key));
-    board.appendChild(buildColumn(status, cards));
+    // count badge "X/Y" = cards in this column / total tickets on the board.
+    board.appendChild(buildColumn(col, cards, tickets.length));
   }
 }
 
