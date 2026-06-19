@@ -607,6 +607,47 @@ pub fn list_jira_assignees(
     .map_err(|e| e.to_string())
 }
 
+/// List the workflow transitions available for a Jira issue (e.g. To Do →
+/// In Progress → Done). Read-only.
+#[tauri::command]
+pub fn list_transitions(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<Vec<integrations::jira::JiraTransition>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    integrations::jira::fetch_transitions(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &key,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Move a Jira issue to a new status via `transition_id`. This is a WRITE to
+/// Jira — the frontend gates it behind a confirmation dialog. After success the
+/// frontend re-syncs, so this command does not re-sync itself.
+#[tauri::command]
+pub fn transition_issue(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    transition_id: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    integrations::jira::do_transition(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &key,
+        &transition_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

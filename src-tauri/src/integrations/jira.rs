@@ -254,6 +254,107 @@ pub fn fetch_assignees(
     parse_assignees(&body)
 }
 
+// ---------------------------------------------------------------------------
+// Jira issue transitions (change a ticket's status, e.g. To Do -> In Progress)
+// ---------------------------------------------------------------------------
+
+/// An available workflow transition for an issue. `id` is what you POST back to
+/// trigger it; `to_status` is the status the issue lands on. Serialized with
+/// snake_case keys (`id`, `name`, `to_status`) for the frontend.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct JiraTransition {
+    pub id: String,
+    pub name: String,
+    pub to_status: String,
+}
+
+/// Parse the body of `GET /rest/api/3/issue/{key}/transitions` —
+/// `{"transitions":[{"id":"11","name":"Start Progress","to":{"name":"In Progress"}}, ...]}`.
+/// `to_status` defaults to "" when the `to.name` is missing.
+pub fn parse_transitions(json: &str) -> Result<Vec<JiraTransition>> {
+    let root: Value = serde_json::from_str(json)?;
+    let arr = root
+        .get("transitions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut out = Vec::with_capacity(arr.len());
+    for t in arr {
+        let id = t
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let name = t
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let to_status = t
+            .get("to")
+            .and_then(|to| to.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        out.push(JiraTransition {
+            id,
+            name,
+            to_status,
+        });
+    }
+    Ok(out)
+}
+
+/// Fetch the transitions available for `issue_key`. Thin HTTP wrapper around
+/// `parse_transitions`; not unit-tested.
+pub fn fetch_transitions(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    issue_key: &str,
+) -> Result<Vec<JiraTransition>> {
+    let url = format!(
+        "{}/rest/api/3/issue/{}/transitions",
+        base_url.trim_end_matches('/'),
+        issue_key
+    );
+    let client = reqwest::blocking::Client::new();
+    let body = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    parse_transitions(&body)
+}
+
+/// Trigger transition `transition_id` on `issue_key` (a WRITE to Jira). Jira
+/// returns 204 No Content on success. Thin HTTP wrapper; not unit-tested.
+pub fn do_transition(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    issue_key: &str,
+    transition_id: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/rest/api/3/issue/{}/transitions",
+        base_url.trim_end_matches('/'),
+        issue_key
+    );
+    let body = serde_json::json!({ "transition": { "id": transition_id } });
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .json(&body)
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+
 pub fn fetch_my_issues(
     base_url: &str,
     email: &str,
@@ -429,6 +530,31 @@ mod tests {
             build_jql("QAT", "", "", "active"),
             "project = \"QAT\" AND assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC"
         );
+    }
+
+    // --- transitions fixture: GET /rest/api/3/issue/{key}/transitions ---
+    const TRANSITIONS_FIXTURE: &str = r#"{
+      "transitions": [
+        {"id":"11","name":"Start Progress","to":{"name":"In Progress"}},
+        {"id":"31","name":"Done","to":{"name":"Done"}}
+      ]
+    }"#;
+
+    #[test]
+    fn parses_transitions_id_name_and_to_status() {
+        let trans = parse_transitions(TRANSITIONS_FIXTURE).unwrap();
+        assert_eq!(trans.len(), 2);
+        assert_eq!(
+            trans[0],
+            JiraTransition {
+                id: "11".to_string(),
+                name: "Start Progress".to_string(),
+                to_status: "In Progress".to_string(),
+            }
+        );
+        assert_eq!(trans[1].id, "31");
+        assert_eq!(trans[1].name, "Done");
+        assert_eq!(trans[1].to_status, "Done");
     }
 
     #[test]
