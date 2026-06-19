@@ -502,6 +502,8 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
 
 // The ticket whose detail modal is currently open (null = closed).
 let detailKey: string | null = null;
+// PRs linked to the open ticket (a ticket can span repos, e.g. native + flutter).
+let linkedPrs: PrRef[] = [];
 
 /** Find a loaded board ticket by key (module already holds them). */
 function ticketByKey(key: string): BoardTicket | undefined {
@@ -535,10 +537,11 @@ async function openDetail(key: string): Promise<void> {
   $("tc-list").innerHTML = "";
   show($("tc-empty"), false);
   $("tc-counter").textContent = "";
-  // Reset the PR tab to its empty state and default back to Test Cases.
+  // Reset the PR tab (clear linked PRs from the previous ticket).
+  linkedPrs = [];
   $("pr-list").innerHTML = "";
   show($("pr-empty"), true);
-  $("pr-empty").textContent = "Belum dicari. Klik Cari PR.";
+  $("pr-empty").textContent = "Tempel link PR di atas (boleh lebih dari satu), atau cari otomatis.";
   selectTab("testcases");
   show($("detail-overlay"), true);
   await loadTestCases(key);
@@ -747,26 +750,45 @@ function prStateClass(state: string): string {
 }
 
 /** Render the searched PRs, each with a "summarize" button. */
-function renderPrs(prs: PrRef[]): void {
+/** Add a PR to the linked list (dedup by repo+number). Returns false if dup. */
+function addLinkedPr(pr: PrRef): boolean {
+  if (linkedPrs.some((p) => p.repo === pr.repo && p.number === pr.number)) return false;
+  linkedPrs.push(pr);
+  return true;
+}
+
+/** Render all linked PRs + a "generate from ALL" bar. */
+function renderPrs(): void {
   const list = $("pr-list");
   list.innerHTML = "";
 
-  if (prs.length === 0) {
+  if (linkedPrs.length === 0) {
     show($("pr-empty"), true);
-    $("pr-empty").textContent = detailKey
-      ? `Nggak nemu PR yang nyebut ${detailKey} di GitHub.`
-      : "Nggak nemu PR.";
+    $("pr-empty").textContent =
+      "Tempel link PR di atas (boleh lebih dari satu), atau cari otomatis.";
     return;
   }
   show($("pr-empty"), false);
 
-  for (const pr of prs) {
+  // Bar: generate test cases from ALL linked PRs combined.
+  const bar = document.createElement("div");
+  bar.className = "pr-allbar";
+  bar.innerHTML = `<button class="btn small primary pr-gen-all" type="button">✨ Buat test case dari SEMUA PR (${linkedPrs.length})</button>`;
+  bar
+    .querySelector<HTMLButtonElement>(".pr-gen-all")
+    ?.addEventListener("click", (e) =>
+      void generateTestCasesFromAllPrs(e.currentTarget as HTMLButtonElement)
+    );
+  list.appendChild(bar);
+
+  for (const pr of linkedPrs) {
     const item = document.createElement("div");
     item.className = "pr-item";
     item.innerHTML = `
       <div class="pr-item-head">
         <span class="pr-ref mono">#${pr.number} · ${esc(pr.repo)}</span>
         <span class="${prStateClass(pr.state)}">${esc(pr.state)}</span>
+        <button class="pr-remove" type="button" title="Hapus dari daftar">✕</button>
       </div>
       <span class="pr-title">${esc(pr.title)}</span>
       <div class="pr-item-actions">
@@ -778,15 +800,21 @@ function renderPrs(prs: PrRef[]): void {
     const btn = item.querySelector<HTMLButtonElement>(".pr-summarize");
     const panel = item.querySelector<HTMLDivElement>(".pr-review");
     btn?.addEventListener("click", () => void summarizePr(pr, btn, panel!));
-
-    const genBtn = item.querySelector<HTMLButtonElement>(".pr-gen-tc");
-    genBtn?.addEventListener("click", () => void generateTestCasesFromPr(pr, genBtn));
+    item
+      .querySelector<HTMLButtonElement>(".pr-gen-tc")
+      ?.addEventListener("click", (e) =>
+        void generateTestCasesFromPr(pr, e.currentTarget as HTMLButtonElement)
+      );
+    item.querySelector<HTMLButtonElement>(".pr-remove")?.addEventListener("click", () => {
+      linkedPrs = linkedPrs.filter((p) => !(p.repo === pr.repo && p.number === pr.number));
+      renderPrs();
+    });
 
     list.appendChild(item);
   }
 }
 
-/** Summarize a PR pasted as a GitHub URL (reliable alternative to auto-search). */
+/** Add a PR pasted as a GitHub URL to the list, then summarize it. */
 async function summarizeFromLink(): Promise<void> {
   const input = $<HTMLInputElement>("pr-link");
   const url = input.value.trim();
@@ -802,13 +830,22 @@ async function summarizeFromLink(): Promise<void> {
     state: "",
     url,
   };
-  renderPrs([pr]);
-  const btn = $("pr-list").querySelector<HTMLButtonElement>(".pr-summarize");
-  const panel = $("pr-list").querySelector<HTMLDivElement>(".pr-review");
+  const isNew = addLinkedPr(pr);
+  input.value = "";
+  renderPrs();
+  if (!isNew) {
+    toast("PR itu udah ada di daftar.");
+    return;
+  }
+  // Auto-summarize the just-added PR (last item in the list).
+  const items = $("pr-list").querySelectorAll<HTMLElement>(".pr-item");
+  const last = items[items.length - 1];
+  const btn = last?.querySelector<HTMLButtonElement>(".pr-summarize");
+  const panel = last?.querySelector<HTMLDivElement>(".pr-review");
   if (btn && panel) await summarizePr(pr, btn, panel);
 }
 
-/** "🔍 Cari PR": search GitHub for PRs that mention the ticket key. */
+/** "🔍 Cari PR": search GitHub for PRs mentioning the key; add them to the list. */
 async function searchPrs(): Promise<void> {
   if (!detailKey) return;
   const key = detailKey;
@@ -818,7 +855,40 @@ async function searchPrs(): Promise<void> {
   btn.textContent = "Lagi cari PR…";
   try {
     const prs = await invoke<PrRef[]>("list_ticket_prs", { key });
-    if (detailKey === key) renderPrs(prs);
+    if (detailKey !== key) return;
+    if (prs.length === 0) {
+      toast(`Nggak nemu PR yang nyebut ${key} di GitHub.`);
+    }
+    for (const pr of prs) addLinkedPr(pr);
+    renderPrs();
+  } catch (e) {
+    toast(errStr(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+/** Generate test cases from the COMBINED diffs of all linked PRs. */
+async function generateTestCasesFromAllPrs(btn: HTMLButtonElement): Promise<void> {
+  if (!detailKey || linkedPrs.length === 0) return;
+  const key = detailKey;
+  const summary = ticketByKey(key)?.summary || "";
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi bikin test case dari semua PR… (model lokal, agak lama)";
+  try {
+    const prs = linkedPrs.map((p) => ({ repo: p.repo, number: p.number }));
+    const cases = await invoke<TestCase[]>("generate_test_cases_from_prs", {
+      key,
+      summary,
+      prs,
+    });
+    toast(`${cases.length} test case dibuat dari ${linkedPrs.length} PR.`);
+    if (detailKey === key) {
+      selectTab("testcases");
+      await loadTestCases(key);
+    }
   } catch (e) {
     toast(errStr(e), "error");
   } finally {

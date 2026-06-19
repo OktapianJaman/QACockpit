@@ -855,6 +855,50 @@ pub fn generate_test_cases_from_pr(
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
 }
 
+/// One PR to combine when generating test cases across repos.
+#[derive(Debug, Deserialize)]
+pub struct PrInput {
+    pub repo: String,
+    pub number: i64,
+}
+
+/// Generate test cases from the COMBINED diffs of several PRs (a ticket can span
+/// e.g. a native repo + a Flutter repo). Diffs are concatenated with a header
+/// per PR; the prompt builder truncates the combined text to its budget.
+#[tauri::command]
+pub fn generate_test_cases_from_prs(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    summary: String,
+    prs: Vec<PrInput>,
+) -> Result<Vec<db::TestCase>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    if cfg.github_token.is_empty() {
+        return Err("Isi GitHub Token di Settings dulu".into());
+    }
+    if prs.is_empty() {
+        return Err("Belum ada PR yang ditempel".into());
+    }
+    let mut combined = String::new();
+    for pr in &prs {
+        let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &pr.repo, pr.number)
+            .map_err(|e| format!("Gagal ambil diff {}#{}: {e}", pr.repo, pr.number))?;
+        combined.push_str(&format!("### PR #{} — {}\n{}\n\n", pr.number, pr.repo, diff));
+    }
+    let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
+        &cfg.gemma_model,
+        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &combined),
+    ));
+    if cases.is_empty() {
+        return Err("AI nggak menghasilkan test case dari PR-PR ini — coba lagi atau cek LM Studio".into());
+    }
+    for (title, steps, expected) in &cases {
+        db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
+    }
+    db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+}
+
 /// Send the ticket's test results to Jira as a comment with an ADF table.
 /// Returns the summary line so the UI can toast it.
 #[tauri::command]

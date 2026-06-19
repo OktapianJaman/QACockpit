@@ -880,11 +880,20 @@ h2 {
   padding: 12px 4px;
 }
 
+.pr-allbar {
+  display: flex;
+  margin-bottom: 10px;
+}
+
 .pr-item {
   background: var(--bg-elev2);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 11px;
+}
+
+.pr-item + .pr-item {
+  margin-top: 9px;
 }
 
 .pr-item-head {
@@ -893,6 +902,19 @@ h2 {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 4px;
+}
+
+.pr-remove {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+.pr-remove:hover {
+  color: var(--red);
 }
 
 .pr-ref {

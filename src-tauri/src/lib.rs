@@ -77,6 +77,7 @@ pub fn run() {
             commands::delete_test_case,
             commands::generate_test_cases,
             commands::generate_test_cases_from_pr,
+            commands::generate_test_cases_from_prs,
             commands::post_test_results,
             commands::list_ticket_prs,
             commands::summarize_pr,
