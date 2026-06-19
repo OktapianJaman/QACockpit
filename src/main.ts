@@ -19,6 +19,7 @@ interface TestCase {
   steps: string;
   expected: string;
   status: string;
+  notes: string;
 }
 
 interface PrRef {
@@ -507,26 +508,27 @@ function renderTestCases(cases: TestCase[]): void {
   for (const c of cases) {
     const item = document.createElement("div");
     item.className = `tc-item tc-${c.status}`;
-    const hasDetail = !!(c.steps || c.expected);
+    // The detail panel always exists now (it hosts the editable notes field),
+    // even when a case has no steps/expected.
     item.innerHTML = `
       <div class="tc-item-head">
         <span class="${tcStatusClass(c.status)}">${esc(tcStatusLabel(c.status))}</span>
         <span class="tc-title">${esc(c.title)}</span>
-        ${hasDetail ? `<button class="tc-toggle" type="button" title="Lihat detail">▾</button>` : ""}
+        <button class="tc-toggle" type="button" title="Lihat detail">▾</button>
         <div class="tc-item-actions">
           <button class="btn small tc-pass" type="button" title="Pass">✅</button>
           <button class="btn small tc-fail" type="button" title="Fail">❌</button>
           <button class="btn small tc-del" type="button" title="Hapus">🗑</button>
         </div>
       </div>
-      ${
-        hasDetail
-          ? `<div class="tc-detail">
-              ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
-              ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
-            </div>`
-          : ""
-      }`;
+      <div class="tc-detail">
+        ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
+        ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
+        <div class="tc-field">
+          <span class="tc-label">Catatan:</span>
+          <textarea class="tc-notes" rows="2" placeholder="Catatan / hasil aktual…">${esc(c.notes)}</textarea>
+        </div>
+      </div>`;
 
     const toggle = item.querySelector<HTMLButtonElement>(".tc-toggle");
     const titleEl = item.querySelector<HTMLElement>(".tc-title");
@@ -534,7 +536,16 @@ function renderTestCases(cases: TestCase[]): void {
       item.classList.toggle("open");
     };
     toggle?.addEventListener("click", doToggle);
-    if (hasDetail) titleEl?.addEventListener("click", doToggle);
+    titleEl?.addEventListener("click", doToggle);
+
+    // Persist notes on blur (no reload — the value is already in the textarea).
+    const notesEl = item.querySelector<HTMLTextAreaElement>(".tc-notes");
+    notesEl?.addEventListener("blur", () => {
+      const notes = notesEl.value;
+      if (notes === c.notes) return; // unchanged
+      c.notes = notes;
+      void saveTestCaseNotes(c.id, notes);
+    });
 
     item.querySelector<HTMLButtonElement>(".tc-pass")?.addEventListener("click", () =>
       void setTestCaseStatus(c.id, "passed")
@@ -568,6 +579,15 @@ async function setTestCaseStatus(id: number, status: string): Promise<void> {
     toast(`Gagal ubah status test case: ${errStr(e)}`, "error");
   }
   await loadTestCases(detailKey);
+}
+
+/** Save a test case's notes (fire-and-forget on blur; no list reload). */
+async function saveTestCaseNotes(id: number, notes: string): Promise<void> {
+  try {
+    await invoke("set_test_case_notes", { id, notes });
+  } catch (e) {
+    toast(`Gagal simpan catatan: ${errStr(e)}`, "error");
+  }
 }
 
 async function deleteTestCase(id: number, title: string): Promise<void> {
