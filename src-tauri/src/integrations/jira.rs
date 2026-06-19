@@ -60,21 +60,43 @@ pub fn parse_issues(json: &str, story_point_field: &str) -> Result<Vec<JiraTicke
 
 /// Fetch issues assigned to the current user, updated in the last day.
 /// Thin HTTP wrapper around `parse_issues`; not unit-tested.
+/// Build the JQL for "my tickets", optionally scoped to a project/board and a
+/// specific assignee. Empty `assignee` means the logged-in user; empty
+/// `project` means all projects. Returns the user's matching tickets ordered by
+/// most-recently-updated (no date cutoff, so the whole assigned backlog shows).
+pub fn build_jql(project: &str, assignee: &str) -> String {
+    let assignee_clause = if assignee.trim().is_empty() {
+        "assignee = currentUser()".to_string()
+    } else {
+        format!("assignee = \"{}\"", assignee.trim())
+    };
+    let mut jql = String::new();
+    if !project.trim().is_empty() {
+        jql.push_str(&format!("project = \"{}\" AND ", project.trim()));
+    }
+    jql.push_str(&assignee_clause);
+    jql.push_str(" ORDER BY updated DESC");
+    jql
+}
+
 pub fn fetch_my_issues(
     base_url: &str,
     email: &str,
     token: &str,
     story_point_field: &str,
+    project: &str,
+    assignee: &str,
 ) -> Result<Vec<JiraTicket>> {
     let fields = format!("summary,status,updated,{}", story_point_field);
     let url = format!("{}/rest/api/3/search", base_url.trim_end_matches('/'));
+    let jql = build_jql(project, assignee);
     let client = reqwest::blocking::Client::new();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
         .header("Accept", "application/json")
         .query(&[
-            ("jql", "assignee=currentUser() AND updated>=-1d"),
+            ("jql", jql.as_str()),
             ("fields", fields.as_str()),
             ("maxResults", "100"),
         ])
@@ -134,5 +156,29 @@ mod tests {
         assert_eq!(tickets[1].status, "To Do");
         assert_eq!(tickets[1].story_points, None);
         assert_eq!(tickets[1].updated, "2026-06-17T08:30:00.000+0700");
+    }
+
+    #[test]
+    fn jql_defaults_to_current_user_all_projects() {
+        assert_eq!(
+            build_jql("", ""),
+            "assignee = currentUser() ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn jql_scopes_to_project_and_assignee() {
+        assert_eq!(
+            build_jql("QAT", "okta@company.com"),
+            "project = \"QAT\" AND assignee = \"okta@company.com\" ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn jql_project_only_uses_current_user() {
+        assert_eq!(
+            build_jql("QAT", ""),
+            "project = \"QAT\" AND assignee = currentUser() ORDER BY updated DESC"
+        );
     }
 }

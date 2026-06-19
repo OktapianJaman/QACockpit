@@ -43,6 +43,10 @@ pub struct AppConfig {
     pub jira_email: String,
     pub jira_token: String,
     pub jira_story_point_field: String,
+    /// Project / board key to pull tickets from (e.g. "QAT"). Empty = all projects.
+    pub jira_project: String,
+    /// Assignee filter. Empty = the logged-in user (currentUser()).
+    pub jira_assignee: String,
     pub github_token: String,
     pub gemma_model: String,
 }
@@ -59,6 +63,8 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_email: get("jira_email")?.unwrap_or_default(),
         jira_token: get("jira_token")?.unwrap_or_default(),
         jira_story_point_field: spf,
+        jira_project: get("jira_project")?.unwrap_or_default(),
+        jira_assignee: get("jira_assignee")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
         gemma_model: get("gemma_model")?.unwrap_or_default(),
     })
@@ -70,6 +76,8 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_email", &cfg.jira_email)?;
     set("jira_token", &cfg.jira_token)?;
     set("jira_story_point_field", &cfg.jira_story_point_field)?;
+    set("jira_project", &cfg.jira_project)?;
+    set("jira_assignee", &cfg.jira_assignee)?;
     set("github_token", &cfg.github_token)?;
     set("gemma_model", &cfg.gemma_model)?;
     Ok(())
@@ -324,23 +332,27 @@ pub fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String>
     if cfg.jira_base_url.is_empty() || cfg.jira_email.is_empty() || cfg.jira_token.is_empty() {
         return Err("Jira credentials missing (set base URL, email, and token in Settings)".into());
     }
-    if cfg.github_token.is_empty() {
-        return Err("GitHub token missing (set it in Settings)".into());
-    }
 
     let tickets = integrations::jira::fetch_my_issues(
         &cfg.jira_base_url,
         &cfg.jira_email,
         &cfg.jira_token,
         &cfg.jira_story_point_field,
+        &cfg.jira_project,
+        &cfg.jira_assignee,
     )
     .map_err(|e| format!("Jira sync failed: {e}"))?;
-
-    let prs = integrations::github::fetch_my_prs(&cfg.github_token)
-        .map_err(|e| format!("GitHub sync failed: {e}"))?;
-
     integrations::save_tickets(&conn, &tickets).map_err(|e| e.to_string())?;
-    integrations::save_prs(&conn, &prs).map_err(|e| e.to_string())?;
+
+    // GitHub is optional (a QA may not use it). Only sync if a token is set.
+    let prs = if cfg.github_token.is_empty() {
+        Vec::new()
+    } else {
+        let prs = integrations::github::fetch_my_prs(&cfg.github_token)
+            .map_err(|e| format!("GitHub sync failed: {e}"))?;
+        integrations::save_prs(&conn, &prs).map_err(|e| e.to_string())?;
+        prs
+    };
 
     Ok(SyncResult {
         tickets: tickets.len(),
