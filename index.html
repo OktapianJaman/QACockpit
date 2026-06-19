@@ -13,115 +13,22 @@
     <header class="topbar">
       <div class="topbar-left">
         <span class="brand">QA Cockpit</span>
-        <input type="date" id="date-input" class="date-input" />
       </div>
       <div class="topbar-right">
-        <button id="rec-btn" class="btn rec-btn" title="Perekam aktivitas">
-          <span id="rec-label">○ Berhenti</span>
-        </button>
         <button id="sync-btn" class="btn" title="Tarik data Jira & GitHub">Sync</button>
-        <button id="refresh-btn" class="btn" title="Muat ulang dashboard">Refresh</button>
+        <button id="refresh-btn" class="btn" title="Muat ulang board">Refresh</button>
         <button id="gear-btn" class="btn icon-btn" title="Pengaturan">⚙</button>
       </div>
     </header>
-
-    <!-- Permission banner -->
-    <div id="perm-banner" class="banner hidden">
-      <span>
-        ⚠️ Izin <strong>Screen Recording</strong> belum aktif. Tanpa ini judul window
-        nggak kebaca, jadi aktivitas nggak ke-track akurat. Aktifkan di
-        <em>System Settings → Privacy &amp; Security → Screen Recording</em>, lalu restart app.
-      </span>
-      <button id="perm-dismiss" class="banner-close" title="Tutup">✕</button>
-    </div>
 
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 
     <main class="content">
-      <!-- Header card -->
-      <section class="card header-card">
-        <div class="header-points">
-          <div class="big-stat">
-            <span class="stat-label">Poin hari ini</span>
-            <span class="stat-value"><strong id="hdr-deserved">0</strong> poin</span>
-          </div>
-          <div class="big-stat">
-            <span class="stat-label">Jam kerja bersih</span>
-            <span class="stat-value"><strong id="hdr-worktime">0m</strong></span>
-          </div>
-        </div>
-      </section>
-
-      <div class="grid">
-        <!-- Left column -->
-        <div class="col col-main">
-          <!-- AI summary -->
-          <section class="card">
-            <div class="card-head">
-              <h2>Ringkasan AI</h2>
-              <button id="ai-btn" class="btn small">Buat ringkasan</button>
-            </div>
-            <div id="ai-summary" class="ai-summary empty">Belum ada ringkasan. Klik "Buat ringkasan" buat bikin.</div>
-          </section>
-
-          <!-- Ticket table -->
-          <section class="card">
-            <div class="card-head">
-              <h2>Tiket</h2>
-              <div class="ticket-filters">
-                <input type="text" id="ticket-search" class="ticket-search" placeholder="Cari kode / judul…" />
-                <select id="ticket-status-filter" class="ticket-status-filter">
-                  <option value="">Semua status</option>
-                </select>
-              </div>
-            </div>
-            <div class="table-wrap">
-              <table class="ticket-table">
-                <thead>
-                  <tr>
-                    <th>Tiket</th>
-                    <th>Judul</th>
-                    <th class="num">Jam asli</th>
-                    <th class="num">Poin</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody id="ticket-body"></tbody>
-              </table>
-            </div>
-            <div id="ticket-empty" class="empty hidden">Belum ada tiket yang dikerjain hari ini.</div>
-          </section>
-
-          <!-- Timeline -->
-          <section class="card">
-            <div class="card-head"><h2>Timeline</h2></div>
-            <div id="timeline" class="timeline"></div>
-            <div id="timeline-empty" class="empty hidden">Belum ada aktivitas hari ini — nyalain perekam dulu.</div>
-          </section>
-        </div>
-
-        <!-- Right column -->
-        <div class="col col-side">
-          <!-- PRs -->
-          <section class="card">
-            <div class="card-head"><h2>Pull Requests</h2></div>
-            <div id="pr-list" class="pr-list"></div>
-            <div id="pr-empty" class="empty hidden">Belum ada PR. Coba Sync dulu.</div>
-          </section>
-
-          <!-- Notes -->
-          <section class="card">
-            <div class="card-head">
-              <h2>Catatan</h2>
-              <span id="note-saved" class="saved-hint hidden">tersimpan ✓</span>
-            </div>
-            <textarea id="note-area" class="note-area" placeholder="Tulis catatan harian di sini…"></textarea>
-            <div class="card-foot">
-              <button id="note-save" class="btn small">Simpan</button>
-            </div>
-          </section>
-        </div>
+      <!-- Kanban board -->
+      <div id="board" class="board"></div>
+      <div id="board-empty" class="board-empty hidden">
+        Belum ada tiket. Klik Sync buat narik dari Jira.
       </div>
     </main>
 
