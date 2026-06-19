@@ -59,6 +59,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub github_repos: String,
     pub gemma_model: String,
+    /// AI provider: "" or "local" = LM Studio; "gemini" = Google Gemini (cloud).
+    #[serde(default)]
+    pub ai_provider: String,
+    /// API key used when `ai_provider == "gemini"`.
+    #[serde(default)]
+    pub gemini_api_key: String,
+    /// Gemini model id; default applied at use-site when blank.
+    #[serde(default)]
+    pub gemini_model: String,
 }
 
 const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
@@ -80,7 +89,25 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         github_token: get("github_token")?.unwrap_or_default(),
         github_repos: get("github_repos")?.unwrap_or_default(),
         gemma_model: get("gemma_model")?.unwrap_or_default(),
+        ai_provider: get("ai_provider")?.unwrap_or_default(),
+        gemini_api_key: get("gemini_api_key")?.unwrap_or_default(),
+        gemini_model: get("gemini_model")?.unwrap_or_default(),
     })
+}
+
+/// Resolve the configured AI target: Gemini when selected and a key is set,
+/// otherwise the local LM Studio model.
+fn ai_target(cfg: &AppConfig) -> crate::ai::gemma::AiTarget {
+    if cfg.ai_provider == "gemini" && !cfg.gemini_api_key.trim().is_empty() {
+        let model = if cfg.gemini_model.trim().is_empty() {
+            "gemini-2.5-flash"
+        } else {
+            cfg.gemini_model.trim()
+        };
+        crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), model)
+    } else {
+        crate::ai::gemma::AiTarget::local(&cfg.gemma_model)
+    }
 }
 
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
@@ -96,6 +123,9 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("github_token", &cfg.github_token)?;
     set("github_repos", &cfg.github_repos)?;
     set("gemma_model", &cfg.gemma_model)?;
+    set("ai_provider", &cfg.ai_provider)?;
+    set("gemini_api_key", &cfg.gemini_api_key)?;
+    set("gemini_model", &cfg.gemini_model)?;
     Ok(())
 }
 
@@ -553,7 +583,7 @@ pub fn generate_ai_summary(
         });
     }
 
-    let summary = crate::ai::gemma::daily_summary(&cfg.gemma_model, &blocks, &tickets);
+    let summary = crate::ai::gemma::daily_summary(&ai_target(&cfg), &blocks, &tickets);
     db::set_ai_summary(&conn, &day, "daily", &summary).map_err(|e| e.to_string())?;
     Ok(summary)
 }
@@ -820,7 +850,7 @@ pub fn generate_test_cases(
     let conn = state.conn()?;
     let cfg = load_config(&conn)?;
 
-    let drafted = crate::ai::gemma::generate_test_cases(&cfg.gemma_model, &key, &summary);
+    let drafted = crate::ai::gemma::generate_test_cases(&ai_target(&cfg), &key, &summary);
     if drafted.is_empty() {
         return Err("AI nggak menghasilkan test case — coba lagi atau cek LM Studio".into());
     }
@@ -848,7 +878,7 @@ pub fn generate_test_cases_from_pr(
     let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
         .map_err(|e| e.to_string())?;
     let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
-        &cfg.gemma_model,
+        &ai_target(&cfg),
         &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &diff),
     ));
     if cases.is_empty() {
@@ -892,7 +922,7 @@ pub fn generate_test_cases_from_prs(
         combined.push_str(&format!("### PR #{} — {}\n{}\n\n", pr.number, pr.repo, diff));
     }
     let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
-        &cfg.gemma_model,
+        &ai_target(&cfg),
         &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &combined),
     ));
     if cases.is_empty() {
@@ -1010,7 +1040,7 @@ pub fn summarize_pr(
     }
     let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
         .map_err(|e| e.to_string())?;
-    Ok(crate::ai::gemma::review_pr(&cfg.gemma_model, &key, &summary, &diff))
+    Ok(crate::ai::gemma::review_pr(&ai_target(&cfg), &key, &summary, &diff))
 }
 
 #[cfg(test)]

@@ -17,12 +17,47 @@ pub const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
 /// LM Studio OpenAI-compatible models-list endpoint.
 pub const LM_STUDIO_MODELS_URL: &str = "http://localhost:1234/v1/models";
 
+/// Google Gemini OpenAI-compatible chat endpoint.
+pub const GEMINI_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+
 /// Cap on how many activity blocks we list in a summary prompt.
 const MAX_BLOCKS: usize = 20;
 
-/// Friendly Indonesian message shown when the local AI cannot be reached.
+/// Friendly Indonesian message shown when the AI cannot be reached.
 const AI_UNAVAILABLE: &str =
-    "(AI lokal tidak tersedia — pastikan LM Studio jalan di localhost:1234)";
+    "(AI tidak tersedia — cek LM Studio / API key Gemini di Settings)";
+
+/// Where to send a chat-completion request: a URL, an optional Bearer token
+/// (`Some` for cloud providers like Gemini, `None` for local LM Studio), and a
+/// model id. Routing all provider differences through this struct lets the
+/// request/response code stay identical (both speak the OpenAI-compatible API).
+#[derive(Debug, Clone)]
+pub struct AiTarget {
+    pub url: String,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+impl AiTarget {
+    /// Local LM Studio target (no auth).
+    pub fn local(model: &str) -> Self {
+        Self {
+            url: LM_STUDIO_URL.to_string(),
+            api_key: None,
+            model: model.to_string(),
+        }
+    }
+
+    /// Google Gemini cloud target (Bearer auth).
+    pub fn gemini(api_key: &str, model: &str) -> Self {
+        Self {
+            url: GEMINI_URL.to_string(),
+            api_key: Some(api_key.to_string()),
+            model: model.to_string(),
+        }
+    }
+}
 
 /// Build an OpenAI-compatible chat-completion request body.
 pub fn build_chat_request(model: &str, prompt: &str) -> Value {
@@ -230,11 +265,11 @@ fn strip_leading_marker(line: &str) -> &str {
 
 /// Convenience: generate draft test cases for a ticket via the local model.
 pub fn generate_test_cases(
-    model: &str,
+    target: &AiTarget,
     key: &str,
     summary: &str,
 ) -> Vec<(String, String, String)> {
-    parse_test_cases(&complete(model, &test_cases_prompt(summary, key)))
+    parse_test_cases(&complete(target, &test_cases_prompt(summary, key)))
 }
 
 /// Max diff length embedded in a PR-review prompt (local model has a small
@@ -268,8 +303,8 @@ pub fn pr_review_prompt(key: &str, summary: &str, diff: &str) -> String {
 }
 
 /// Convenience: ask the local model to review a PR diff for a ticket.
-pub fn review_pr(model: &str, key: &str, summary: &str, diff: &str) -> String {
-    complete(model, &pr_review_prompt(key, summary, diff))
+pub fn review_pr(target: &AiTarget, key: &str, summary: &str, diff: &str) -> String {
+    complete(target, &pr_review_prompt(key, summary, diff))
 }
 
 /// Build an Indonesian prompt asking Gemma, as a QA assistant, to DRAFT test
@@ -310,20 +345,22 @@ pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str) -> Stri
 
 /// Convenience: ask the local model to draft test cases from a PR diff.
 pub fn generate_test_cases_from_diff(
-    model: &str,
+    target: &AiTarget,
     key: &str,
     summary: &str,
     diff: &str,
 ) -> Vec<(String, String, String)> {
-    parse_test_cases(&complete(model, &test_cases_from_diff_prompt(key, summary, diff)))
+    parse_test_cases(&complete(target, &test_cases_from_diff_prompt(key, summary, diff)))
 }
 
-/// POST a prompt to LM Studio and return the model's reply.
+/// POST a prompt to the configured AI [`AiTarget`] and return the model's reply.
 ///
-/// Degrades gracefully: any failure (LM Studio down, timeout, bad payload)
-/// returns [`AI_UNAVAILABLE`] instead of erroring or panicking.
-pub fn complete(model: &str, prompt: &str) -> String {
-    let body = build_chat_request(model, prompt);
+/// Sends the same OpenAI-compatible body to either LM Studio (no auth) or
+/// Gemini (Bearer auth) depending on `target`. Degrades gracefully: any failure
+/// (provider down, timeout, bad payload) returns [`AI_UNAVAILABLE`] instead of
+/// erroring or panicking.
+pub fn complete(target: &AiTarget, prompt: &str) -> String {
+    let body = build_chat_request(&target.model, prompt);
 
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -333,7 +370,12 @@ pub fn complete(model: &str, prompt: &str) -> String {
         Err(_) => return AI_UNAVAILABLE.to_string(),
     };
 
-    let resp = match client.post(LM_STUDIO_URL).json(&body).send() {
+    let mut req = client.post(&target.url).json(&body);
+    if let Some(key) = &target.api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = match req.send() {
         Ok(r) => r,
         Err(_) => return AI_UNAVAILABLE.to_string(),
     };
@@ -349,14 +391,14 @@ pub fn complete(model: &str, prompt: &str) -> String {
     }
 }
 
-/// Convenience: summarize the workday via the local model.
-pub fn daily_summary(model: &str, blocks: &[ActivityBlock], tickets: &[JiraTicket]) -> String {
-    complete(model, &daily_summary_prompt(blocks, tickets))
+/// Convenience: summarize the workday via the configured model.
+pub fn daily_summary(target: &AiTarget, blocks: &[ActivityBlock], tickets: &[JiraTicket]) -> String {
+    complete(target, &daily_summary_prompt(blocks, tickets))
 }
 
-/// Convenience: explain story-point fairness via the local model.
-pub fn explain_fairness(model: &str, items: &[(String, Assessment)]) -> String {
-    complete(model, &explain_fairness_prompt(items))
+/// Convenience: explain story-point fairness via the configured model.
+pub fn explain_fairness(target: &AiTarget, items: &[(String, Assessment)]) -> String {
+    complete(target, &explain_fairness_prompt(items))
 }
 
 #[cfg(test)]
