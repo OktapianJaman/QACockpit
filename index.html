@@ -153,6 +153,15 @@
           <label>Assignee
             <select id="cfg-jira_assignee"></select>
           </label>
+          <label>Tampilkan status
+            <select id="cfg-jira_status_category">
+              <option value="">Semua status</option>
+              <option value="In Progress">Lagi dikerjakan (In Progress)</option>
+              <option value="To Do">Belum mulai (To Do)</option>
+              <option value="Done">Selesai (Done)</option>
+            </select>
+            <small class="field-hint">Pilih "In Progress" biar cuma tiket yang lagi kamu kerjain yang muncul.</small>
+          </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />
           </label>

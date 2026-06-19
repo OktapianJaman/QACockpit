@@ -64,7 +64,7 @@ pub fn parse_issues(json: &str, story_point_field: &str) -> Result<Vec<JiraTicke
 /// specific assignee. Empty `assignee` means the logged-in user; empty
 /// `project` means all projects. Returns the user's matching tickets ordered by
 /// most-recently-updated (no date cutoff, so the whole assigned backlog shows).
-pub fn build_jql(project: &str, assignee: &str) -> String {
+pub fn build_jql(project: &str, assignee: &str, status_category: &str) -> String {
     let assignee_clause = if assignee.trim().is_empty() {
         "assignee = currentUser()".to_string()
     } else {
@@ -75,6 +75,14 @@ pub fn build_jql(project: &str, assignee: &str) -> String {
         jql.push_str(&format!("project = \"{}\" AND ", project.trim()));
     }
     jql.push_str(&assignee_clause);
+    // Optional status-category filter ("To Do" | "In Progress" | "Done") so a QA
+    // can show only what they're actively working (In Progress).
+    if !status_category.trim().is_empty() {
+        jql.push_str(&format!(
+            " AND statusCategory = \"{}\"",
+            status_category.trim()
+        ));
+    }
     jql.push_str(" ORDER BY updated DESC");
     jql
 }
@@ -246,13 +254,14 @@ pub fn fetch_my_issues(
     story_point_field: &str,
     project: &str,
     assignee: &str,
+    status_category: &str,
 ) -> Result<Vec<JiraTicket>> {
     let fields = format!("summary,status,updated,{}", story_point_field);
     // The legacy /rest/api/3/search endpoint was removed by Atlassian (returns
     // 410 Gone since mid-2025); the enhanced-JQL endpoint replaces it. The
     // response still has an `issues[]` array, so `parse_issues` is unchanged.
     let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
-    let jql = build_jql(project, assignee);
+    let jql = build_jql(project, assignee, status_category);
     let client = reqwest::blocking::Client::new();
     let body = client
         .get(url)
@@ -377,7 +386,7 @@ mod tests {
     #[test]
     fn jql_defaults_to_current_user_all_projects() {
         assert_eq!(
-            build_jql("", ""),
+            build_jql("", "", ""),
             "assignee = currentUser() ORDER BY updated DESC"
         );
     }
@@ -385,7 +394,7 @@ mod tests {
     #[test]
     fn jql_scopes_to_project_and_assignee() {
         assert_eq!(
-            build_jql("QAT", "okta@company.com"),
+            build_jql("QAT", "okta@company.com", ""),
             "project = \"QAT\" AND assignee = \"okta@company.com\" ORDER BY updated DESC"
         );
     }
@@ -393,8 +402,16 @@ mod tests {
     #[test]
     fn jql_project_only_uses_current_user() {
         assert_eq!(
-            build_jql("QAT", ""),
+            build_jql("QAT", "", ""),
             "project = \"QAT\" AND assignee = currentUser() ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn jql_with_status_category() {
+        assert_eq!(
+            build_jql("QAT", "", "In Progress"),
+            "project = \"QAT\" AND assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC"
         );
     }
 }
