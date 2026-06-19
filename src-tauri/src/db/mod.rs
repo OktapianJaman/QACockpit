@@ -3,6 +3,18 @@ use crate::core::types::ActivityBlock;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
+use serde::Serialize;
+
+/// A per-ticket test case stored in the local SQLite db.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TestCase {
+    pub id: i64,
+    pub ticket_key: String,
+    pub title: String,
+    pub steps: String,
+    pub expected: String,
+    pub status: String,
+}
 
 /// Open (or create) the SQLite database at `path` and apply the schema.
 /// Pass `":memory:"` for an in-memory database (used in tests).
@@ -194,6 +206,87 @@ pub fn get_ai_summary(conn: &Connection, day: &str, kind: &str) -> Result<Option
     } else {
         Ok(None)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test cases (per-ticket QA test cases)
+// ---------------------------------------------------------------------------
+
+/// Insert one test case for a ticket. Returns the new row id. `created_at` is
+/// stamped with the local time in RFC3339.
+pub fn add_test_case(
+    conn: &Connection,
+    ticket_key: &str,
+    title: &str,
+    steps: &str,
+    expected: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO test_cases (ticket_key, title, steps, expected, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'untested', ?5)",
+        rusqlite::params![
+            ticket_key,
+            title,
+            steps,
+            expected,
+            chrono::Local::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List all test cases for a ticket, ordered by id.
+pub fn list_test_cases(conn: &Connection, ticket_key: &str) -> Result<Vec<TestCase>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, ticket_key, title, steps, expected, status FROM test_cases
+         WHERE ticket_key = ?1
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([ticket_key], |row| {
+        Ok(TestCase {
+            id: row.get(0)?,
+            ticket_key: row.get(1)?,
+            title: row.get(2)?,
+            steps: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            expected: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            status: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Update a single test case's run status (e.g. 'untested' | 'passed' | 'failed').
+pub fn set_test_case_status(conn: &Connection, id: i64, status: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE test_cases SET status = ?1 WHERE id = ?2",
+        rusqlite::params![status, id],
+    )?;
+    Ok(())
+}
+
+/// Update a test case's title/steps/expected (manual edit).
+pub fn update_test_case(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    steps: &str,
+    expected: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE test_cases SET title = ?1, steps = ?2, expected = ?3 WHERE id = ?4",
+        rusqlite::params![title, steps, expected, id],
+    )?;
+    Ok(())
+}
+
+/// Delete a test case by id.
+pub fn delete_test_case(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM test_cases WHERE id = ?1", [id])?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -417,5 +510,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(key2, None);
+    }
+
+    #[test]
+    fn test_cases_crud_round_trips() {
+        let conn = open(":memory:").unwrap();
+
+        let id1 = add_test_case(&conn, "QAT-1", "Login valid", "Buka login; isi kredensial", "Masuk ke dashboard").unwrap();
+        let id2 = add_test_case(&conn, "QAT-1", "Login invalid", "Isi password salah", "Tampil pesan error").unwrap();
+        assert!(id1 > 0 && id2 > id1);
+
+        let cases = list_test_cases(&conn, "QAT-1").unwrap();
+        assert_eq!(cases.len(), 2);
+        // Ordered by id.
+        assert_eq!(cases[0].id, id1);
+        assert_eq!(cases[0].title, "Login valid");
+        assert_eq!(cases[0].steps, "Buka login; isi kredensial");
+        assert_eq!(cases[0].expected, "Masuk ke dashboard");
+        // Default status.
+        assert_eq!(cases[0].status, "untested");
+        assert_eq!(cases[1].title, "Login invalid");
+
+        // A different ticket has no cases.
+        assert!(list_test_cases(&conn, "QAT-2").unwrap().is_empty());
+
+        // Update status.
+        set_test_case_status(&conn, id1, "passed").unwrap();
+        let cases = list_test_cases(&conn, "QAT-1").unwrap();
+        assert_eq!(cases[0].status, "passed");
+        assert_eq!(cases[1].status, "untested");
+
+        // Update fields.
+        update_test_case(&conn, id2, "Login salah", "step baru", "hasil baru").unwrap();
+        let cases = list_test_cases(&conn, "QAT-1").unwrap();
+        assert_eq!(cases[1].title, "Login salah");
+        assert_eq!(cases[1].steps, "step baru");
+        assert_eq!(cases[1].expected, "hasil baru");
+
+        // Delete one.
+        delete_test_case(&conn, id1).unwrap();
+        let cases = list_test_cases(&conn, "QAT-1").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].id, id2);
     }
 }

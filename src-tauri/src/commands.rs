@@ -727,6 +727,83 @@ pub fn set_story_points(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Test cases (per-ticket QA test cases + AI generation)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_test_cases(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<Vec<db::TestCase>, String> {
+    let conn = state.conn()?;
+    db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_test_case(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    title: String,
+    steps: String,
+    expected: String,
+) -> Result<i64, String> {
+    let conn = state.conn()?;
+    db::add_test_case(&conn, &key, &title, &steps, &expected).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_test_case_status(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    status: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::set_test_case_status(&conn, id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_test_case(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    title: String,
+    steps: String,
+    expected: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::update_test_case(&conn, id, &title, &steps, &expected).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_test_case(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::delete_test_case(&conn, id).map_err(|e| e.to_string())
+}
+
+/// Ask the local model to draft test cases for a ticket, persist each, and
+/// return the freshly-listed cases for the ticket.
+#[tauri::command]
+pub fn generate_test_cases(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    summary: String,
+) -> Result<Vec<db::TestCase>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+
+    let drafted = crate::ai::gemma::generate_test_cases(&cfg.gemma_model, &key, &summary);
+    if drafted.is_empty() {
+        return Err("AI nggak menghasilkan test case — coba lagi atau cek LM Studio".into());
+    }
+    for (title, steps, expected) in &drafted {
+        db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
+    }
+    db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

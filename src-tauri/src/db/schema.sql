@@ -49,3 +49,13 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS test_cases (
+    id INTEGER PRIMARY KEY,
+    ticket_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    steps TEXT,
+    expected TEXT,
+    status TEXT NOT NULL DEFAULT 'untested',
+    created_at TEXT
+);

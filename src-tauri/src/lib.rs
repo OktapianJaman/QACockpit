@@ -69,6 +69,12 @@ pub fn run() {
             commands::transition_issue,
             commands::list_board_tickets,
             commands::set_story_points,
+            commands::list_test_cases,
+            commands::add_test_case,
+            commands::set_test_case_status,
+            commands::update_test_case,
+            commands::delete_test_case,
+            commands::generate_test_cases,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

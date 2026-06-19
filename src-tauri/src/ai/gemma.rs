@@ -166,6 +166,77 @@ pub fn explain_fairness_prompt(items: &[(String, Assessment)]) -> String {
     s
 }
 
+/// Build an Indonesian prompt asking Gemma to draft test cases for a ticket.
+/// Uses a SIMPLE pipe-separated, one-per-line format that a small local model
+/// can follow reliably: `Judul | Langkah | Hasil yang diharapkan`.
+pub fn test_cases_prompt(summary: &str, key: &str) -> String {
+    format!(
+        "Kamu adalah asisten QA. Buatkan 3 sampai 6 test case untuk tiket Jira berikut.\n\n\
+         Tiket: {key}\n\
+         Ringkasan: {summary}\n\n\
+         ATURAN OUTPUT (wajib diikuti):\n\
+         - Satu test case per baris.\n\
+         - Format tiap baris PERSIS: Judul | Langkah | Hasil yang diharapkan\n\
+         - Pakai tanda pipa (|) sebagai pemisah ketiga bagian.\n\
+         - JANGAN pakai penomoran, bullet, atau teks tambahan apa pun.\n\
+         - Tulis dalam bahasa Indonesia.\n\n\
+         Contoh:\n\
+         Login dengan kredensial valid | Buka halaman login, isi email & password benar, klik Masuk | Pengguna masuk ke dashboard\n\n\
+         Sekarang tulis test case-nya:"
+    )
+}
+
+/// Parse the model's pipe-separated test-case output into `(title, steps, expected)`
+/// tuples. Tolerant: strips leading markdown bullets / numbering (`- `, `* `,
+/// `N. `, `N) `), splits each line on `|` into at most 3 parts, trims, and skips
+/// any line that yields no title.
+pub fn parse_test_cases(text: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = strip_leading_marker(raw.trim());
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '|');
+        let title = parts.next().unwrap_or("").trim().to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let steps = parts.next().unwrap_or("").trim().to_string();
+        let expected = parts.next().unwrap_or("").trim().to_string();
+        out.push((title, steps, expected));
+    }
+    out
+}
+
+/// Strip a leading markdown bullet (`- `, `* `) or numbering (`12. `, `3) `)
+/// from a trimmed line.
+fn strip_leading_marker(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+        return rest.trim_start();
+    }
+    // Numbered: leading digits followed by '.' or ')' then whitespace.
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let rest = &line[digits.len()..];
+        if let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+            if after.starts_with(char::is_whitespace) {
+                return after.trim_start();
+            }
+        }
+    }
+    line
+}
+
+/// Convenience: generate draft test cases for a ticket via the local model.
+pub fn generate_test_cases(
+    model: &str,
+    key: &str,
+    summary: &str,
+) -> Vec<(String, String, String)> {
+    parse_test_cases(&complete(model, &test_cases_prompt(summary, key)))
+}
+
 /// POST a prompt to LM Studio and return the model's reply.
 ///
 /// Degrades gracefully: any failure (LM Studio down, timeout, bad payload)
@@ -282,6 +353,56 @@ mod tests {
         assert!(p.contains("JIRA-1"));
         // Indonesian instruction word.
         assert!(p.contains("ringkas") || p.contains("rangkum"));
+    }
+
+    #[test]
+    fn test_cases_prompt_contains_key_facts() {
+        let p = test_cases_prompt("Login bug di halaman utama", "QAT-7");
+        assert!(p.contains("QAT-7"));
+        assert!(p.contains("Login bug di halaman utama"));
+        // Indonesian + the pipe format.
+        assert!(p.contains("test case"));
+        assert!(p.contains("Judul | Langkah | Hasil"));
+    }
+
+    #[test]
+    fn parse_test_cases_extracts_clean_tuples() {
+        let fixture = "\
+Login valid | Buka login, isi kredensial benar, klik Masuk | Masuk ke dashboard
+Login invalid | Isi password salah | Muncul pesan error
+- Logout | Klik tombol Logout | Kembali ke halaman login
+
+Cuma judul tanpa pipa
+1. Lupa password | Klik 'Lupa password' | Email reset terkirim";
+
+        let got = parse_test_cases(fixture);
+        assert_eq!(got.len(), 5);
+        assert_eq!(
+            got[0],
+            (
+                "Login valid".to_string(),
+                "Buka login, isi kredensial benar, klik Masuk".to_string(),
+                "Masuk ke dashboard".to_string()
+            )
+        );
+        // Bullet stripped.
+        assert_eq!(got[2].0, "Logout");
+        // A line with only a title still yields a tuple (steps/expected empty).
+        assert_eq!(
+            got[3],
+            ("Cuma judul tanpa pipa".to_string(), String::new(), String::new())
+        );
+        // Numbering stripped.
+        assert_eq!(got[4].0, "Lupa password");
+    }
+
+    #[test]
+    fn parse_test_cases_skips_blank_and_titleless() {
+        let fixture = "\n   \n| langkah | hasil\n\nValid | a | b\n";
+        let got = parse_test_cases(fixture);
+        // The "| langkah | hasil" line has an empty title and is skipped.
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "Valid");
     }
 
     #[test]
