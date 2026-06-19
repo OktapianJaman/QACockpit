@@ -571,7 +571,11 @@ h2 {
   padding: 4px 6px;
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  min-width: 96px;
+  /* Fixed width so long "KEY — summary" options don't stretch the row. */
+  width: 160px;
+  max-width: 160px;
+  flex: none;
+  text-overflow: ellipsis;
   color-scheme: dark;
 }
 
