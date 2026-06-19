@@ -1,22 +1,521 @@
 import { invoke } from "@tauri-apps/api/core";
 
-let greetInputEl: HTMLInputElement | null;
-let greetMsgEl: HTMLElement | null;
+// ---------------------------------------------------------------------------
+// Backend types (mirror src-tauri/src/commands.rs — serde defaults to
+// snake_case Rust field names, so match them exactly).
+// ---------------------------------------------------------------------------
 
-async function greet() {
-  if (greetMsgEl && greetInputEl) {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsgEl.textContent = await invoke("greet", {
-      name: greetInputEl.value,
-    });
+type Fairness = "Fair" | "UnderPointed" | "OverPointed";
+
+interface DashboardHeader {
+  deserved_total: number;
+  assigned_total: number;
+  net_work_secs: number;
+}
+
+interface TicketRow {
+  key: string;
+  summary: string;
+  status: string;
+  story_points: number | null;
+  worked_secs: number;
+  deserved: number;
+  assigned: number;
+  fairness: Fairness;
+}
+
+interface TimelineRow {
+  id: number;
+  app: string;
+  title: string;
+  start: string;
+  end: string;
+  minutes: number;
+  is_idle: boolean;
+  ticket_key: string | null;
+}
+
+interface PrRow {
+  number: number;
+  repo: string;
+  title: string;
+  state: string;
+  url: string;
+  updated: string;
+}
+
+interface Dashboard {
+  day: string;
+  header: DashboardHeader;
+  tickets: TicketRow[];
+  timeline: TimelineRow[];
+  prs: PrRow[];
+  notes: string;
+  ai_summary: string;
+}
+
+interface AppConfig {
+  jira_base_url: string;
+  jira_email: string;
+  jira_token: string;
+  jira_story_point_field: string;
+  github_token: string;
+  gemma_model: string;
+}
+
+const CONFIG_KEYS: (keyof AppConfig)[] = [
+  "jira_base_url",
+  "jira_email",
+  "jira_token",
+  "jira_story_point_field",
+  "github_token",
+  "gemma_model",
+];
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let currentDay = "";
+let dashboard: Dashboard | null = null;
+let recording = false;
+
+// ---------------------------------------------------------------------------
+// DOM helpers
+// ---------------------------------------------------------------------------
+
+function $<T extends HTMLElement = HTMLElement>(id: string): T {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`element #${id} tidak ditemukan`);
+  return el as T;
+}
+
+function show(el: HTMLElement, visible: boolean): void {
+  el.classList.toggle("hidden", !visible);
+}
+
+/** Escape text destined for innerHTML interpolation. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/** Seconds → "Hh Mm" (or "Mm" when under an hour). */
+function formatSecs(secs: number): string {
+  const total = Math.max(0, Math.round(secs / 60));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}j ${m}m` : `${m}m`;
+}
+
+/** Round a points value to 1 decimal place, dropping a trailing .0. */
+function fmtPoints(n: number): string {
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+
+/** RFC3339 timestamp → local "HH:MM"; falls back to raw on parse failure. */
+function fmtTime(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+interface ChipInfo {
+  cls: string;
+  emoji: string;
+  label: string;
+}
+
+function statusChip(f: Fairness): ChipInfo {
+  switch (f) {
+    case "Fair":
+      return { cls: "fair", emoji: "🟢", label: "Adil" };
+    case "UnderPointed":
+      return { cls: "under", emoji: "🔴", label: "Kurang poin" };
+    case "OverPointed":
+      return { cls: "over", emoji: "🟡", label: "Lebih poin" };
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  document.querySelector("#greet-form")?.addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
+// ---------------------------------------------------------------------------
+// Toast / errors
+// ---------------------------------------------------------------------------
+
+let toastTimer: number | undefined;
+
+function toast(msg: string, kind: "info" | "error" = "info"): void {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.remove("error", "info");
+  el.classList.add(kind);
+  show(el, true);
+  if (toastTimer) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => show(el, false), kind === "error" ? 6000 : 3500);
+}
+
+function errStr(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+function renderHeader(h: DashboardHeader): void {
+  $("hdr-deserved").textContent = fmtPoints(h.deserved_total);
+  $("hdr-assigned").textContent = fmtPoints(h.assigned_total);
+  $("hdr-worktime").textContent = formatSecs(h.net_work_secs);
+}
+
+function renderAiSummary(text: string): void {
+  const el = $("ai-summary");
+  if (text && text.trim()) {
+    el.textContent = text;
+    el.classList.remove("empty");
+  } else {
+    el.textContent = 'Belum ada ringkasan. Klik "Buat ringkasan" buat bikin.';
+    el.classList.add("empty");
+  }
+}
+
+function renderTickets(tickets: TicketRow[]): void {
+  const body = $("ticket-body");
+  show($("ticket-empty"), tickets.length === 0);
+  if (tickets.length === 0) {
+    body.innerHTML = "";
+    return;
+  }
+  body.innerHTML = tickets
+    .map((t) => {
+      const chip = statusChip(t.fairness);
+      return `
+        <tr class="row-${chip.cls}">
+          <td class="mono">${esc(t.key)}</td>
+          <td class="ellipsis" title="${esc(t.summary)}">${esc(t.summary || "—")}</td>
+          <td class="num">${esc(formatSecs(t.worked_secs))}</td>
+          <td class="num">${esc(fmtPoints(t.deserved))}</td>
+          <td class="num">${t.story_points == null ? "—" : esc(fmtPoints(t.assigned))}</td>
+          <td><span class="chip chip-${chip.cls}">${chip.emoji} ${chip.label}</span></td>
+        </tr>`;
+    })
+    .join("");
+}
+
+function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
+  const wrap = $("timeline");
+  show($("timeline-empty"), timeline.length === 0);
+  if (timeline.length === 0) {
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const keys = tickets.map((t) => t.key);
+
+  wrap.innerHTML = timeline
+    .map((b) => {
+      const opts = ['<option value="">—</option>']
+        .concat(
+          keys.map(
+            (k) =>
+              `<option value="${esc(k)}"${
+                k === b.ticket_key ? " selected" : ""
+              }>${esc(k)}</option>`
+          )
+        )
+        .join("");
+      // If the current ticket_key isn't in the known list, add it so the
+      // selection isn't silently lost.
+      const extra =
+        b.ticket_key && !keys.includes(b.ticket_key)
+          ? `<option value="${esc(b.ticket_key)}" selected>${esc(b.ticket_key)}</option>`
+          : "";
+      return `
+        <div class="tl-block${b.is_idle ? " idle" : ""}">
+          <div class="tl-time">${esc(fmtTime(b.start))}–${esc(fmtTime(b.end))}</div>
+          <div class="tl-main">
+            <div class="tl-title">
+              <span class="tl-app">${esc(b.app || "—")}</span>
+              <span class="tl-sep">·</span>
+              <span class="tl-name ellipsis" title="${esc(b.title)}">${esc(b.title || "—")}</span>
+              ${b.is_idle ? '<span class="idle-tag">idle</span>' : ""}
+            </div>
+            <div class="tl-meta">${b.minutes}m</div>
+          </div>
+          <select class="tl-select" data-block="${b.id}">
+            ${opts}${extra}
+          </select>
+        </div>`;
+    })
+    .join("");
+
+  wrap.querySelectorAll<HTMLSelectElement>(".tl-select").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const blockId = Number(sel.dataset.block);
+      void onTicketCorrection(blockId, sel.value);
+    });
   });
+}
+
+function renderPrs(prs: PrRow[]): void {
+  const list = $("pr-list");
+  show($("pr-empty"), prs.length === 0);
+  if (prs.length === 0) {
+    list.innerHTML = "";
+    return;
+  }
+  list.innerHTML = prs
+    .map((p) => {
+      const state = p.state.toLowerCase();
+      return `
+        <a class="pr-item" href="${esc(p.url)}" target="_blank" rel="noopener">
+          <div class="pr-top">
+            <span class="pr-num mono">#${p.number}</span>
+            <span class="pr-repo">${esc(p.repo)}</span>
+            <span class="chip pr-${esc(state)}">${esc(p.state || "—")}</span>
+          </div>
+          <div class="pr-title ellipsis" title="${esc(p.title)}">${esc(p.title || "—")}</div>
+        </a>`;
+    })
+    .join("");
+}
+
+function renderNotes(notes: string): void {
+  ($("note-area") as HTMLTextAreaElement).value = notes ?? "";
+}
+
+function render(d: Dashboard): void {
+  renderHeader(d.header);
+  renderAiSummary(d.ai_summary);
+  renderTickets(d.tickets);
+  renderTimeline(d.timeline, d.tickets);
+  renderPrs(d.prs);
+  renderNotes(d.notes);
+}
+
+// ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+async function loadDashboard(): Promise<void> {
+  try {
+    dashboard = await invoke<Dashboard>("get_dashboard", { day: currentDay });
+    render(dashboard);
+  } catch (e) {
+    toast(`Gagal memuat dashboard: ${errStr(e)}`, "error");
+  }
+}
+
+async function refreshRecorderStatus(): Promise<void> {
+  try {
+    recording = await invoke<boolean>("recorder_status");
+  } catch {
+    recording = false;
+  }
+  renderRecorderBtn();
+}
+
+function renderRecorderBtn(): void {
+  const label = $("rec-label");
+  const btn = $("rec-btn");
+  if (recording) {
+    label.textContent = "● REC";
+    btn.classList.add("recording");
+  } else {
+    label.textContent = "○ Berhenti";
+    btn.classList.remove("recording");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+async function toggleRecorder(): Promise<void> {
+  try {
+    if (recording) {
+      await invoke("recorder_stop");
+      recording = false;
+      toast("Perekam dihentikan.");
+    } else {
+      await invoke("recorder_start");
+      recording = true;
+      toast("Perekam jalan.");
+    }
+  } catch (e) {
+    toast(`Gagal mengubah perekam: ${errStr(e)}`, "error");
+    await refreshRecorderStatus();
+    return;
+  }
+  renderRecorderBtn();
+}
+
+async function doSync(): Promise<void> {
+  const btn = $<HTMLButtonElement>("sync-btn");
+  btn.disabled = true;
+  btn.textContent = "Sync…";
+  try {
+    const res = await invoke<{ tickets: number; prs: number }>("sync_now");
+    toast(`Sync beres: ${res.tickets} tiket, ${res.prs} PR.`);
+    await loadDashboard();
+  } catch (e) {
+    toast(`Sync gagal: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sync";
+  }
+}
+
+async function onTicketCorrection(blockId: number, ticketKey: string): Promise<void> {
+  try {
+    // Tauri auto-maps snake_case command params (block_id/ticket_key) to camelCase.
+    await invoke("set_ticket_for_block", { blockId, ticketKey });
+    await invoke("recompute", { day: currentDay });
+    await loadDashboard();
+    toast("Koreksi tiket tersimpan.");
+  } catch (e) {
+    toast(`Gagal koreksi tiket: ${errStr(e)}`, "error");
+    await loadDashboard();
+  }
+}
+
+async function generateAi(): Promise<void> {
+  const btn = $<HTMLButtonElement>("ai-btn");
+  const el = $("ai-summary");
+  btn.disabled = true;
+  const prevLabel = btn.textContent;
+  btn.textContent = "Menyusun…";
+  el.textContent = "Menyusun ringkasan… (ini bisa agak lama)";
+  el.classList.add("empty");
+  try {
+    await invoke<string>("generate_ai_summary", { day: currentDay });
+    await loadDashboard();
+    toast("Ringkasan AI dibuat.");
+  } catch (e) {
+    toast(`Gagal bikin ringkasan: ${errStr(e)}`, "error");
+    renderAiSummary(dashboard?.ai_summary ?? "");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
+}
+
+async function saveNote(): Promise<void> {
+  const body = ($("note-area") as HTMLTextAreaElement).value;
+  try {
+    await invoke("save_note", { day: currentDay, body });
+    const hint = $("note-saved");
+    show(hint, true);
+    window.setTimeout(() => show(hint, false), 2000);
+  } catch (e) {
+    toast(`Gagal simpan catatan: ${errStr(e)}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+async function openSettings(): Promise<void> {
+  try {
+    const cfg = await invoke<AppConfig>("get_config");
+    for (const k of CONFIG_KEYS) {
+      ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
+    }
+  } catch (e) {
+    toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
+  }
+  show($("settings-overlay"), true);
+}
+
+function closeSettings(): void {
+  show($("settings-overlay"), false);
+}
+
+async function saveSettings(): Promise<void> {
+  const cfg = {} as AppConfig;
+  for (const k of CONFIG_KEYS) {
+    cfg[k] = ($(`cfg-${k}`) as HTMLInputElement).value.trim();
+  }
+  if (!cfg.jira_story_point_field) cfg.jira_story_point_field = "customfield_10016";
+  try {
+    await invoke("set_config", { cfg });
+    toast("Pengaturan tersimpan.");
+    closeSettings();
+  } catch (e) {
+    toast(`Gagal simpan pengaturan: ${errStr(e)}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Permission banner
+// ---------------------------------------------------------------------------
+
+async function checkPermission(): Promise<void> {
+  try {
+    const ok = await invoke<boolean>("screen_recording_ok");
+    show($("perm-banner"), !ok);
+  } catch {
+    // If the check itself fails, don't nag.
+    show($("perm-banner"), false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+function wireEvents(): void {
+  $("rec-btn").addEventListener("click", () => void toggleRecorder());
+  $("sync-btn").addEventListener("click", () => void doSync());
+  $("refresh-btn").addEventListener("click", () => void loadDashboard());
+  $("ai-btn").addEventListener("click", () => void generateAi());
+  $("note-save").addEventListener("click", () => void saveNote());
+  $("note-area").addEventListener("blur", () => void saveNote());
+
+  $("gear-btn").addEventListener("click", () => void openSettings());
+  $("settings-close").addEventListener("click", closeSettings);
+  $("settings-cancel").addEventListener("click", closeSettings);
+  $("settings-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    void saveSettings();
+  });
+  $("settings-overlay").addEventListener("click", (e) => {
+    if (e.target === $("settings-overlay")) closeSettings();
+  });
+
+  $("perm-dismiss").addEventListener("click", () => show($("perm-banner"), false));
+
+  const dateInput = $<HTMLInputElement>("date-input");
+  dateInput.addEventListener("change", () => {
+    if (dateInput.value) {
+      currentDay = dateInput.value;
+      void loadDashboard();
+    }
+  });
+}
+
+async function init(): Promise<void> {
+  wireEvents();
+  try {
+    currentDay = await invoke<string>("today");
+  } catch {
+    currentDay = new Date().toISOString().slice(0, 10);
+  }
+  $<HTMLInputElement>("date-input").value = currentDay;
+
+  await Promise.all([loadDashboard(), refreshRecorderStatus(), checkPermission()]);
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  void init();
 });
