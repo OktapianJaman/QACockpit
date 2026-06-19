@@ -472,10 +472,7 @@ function tcStatusLabel(status: string): string {
 }
 
 /** Render the test-case list + counter for the open ticket. */
-let detailCases: TestCase[] = [];
-
 function renderTestCases(cases: TestCase[]): void {
-  detailCases = cases;
   const list = $("tc-list");
   show($("tc-empty"), cases.length === 0);
 
@@ -513,7 +510,9 @@ function renderTestCases(cases: TestCase[]): void {
 
     const toggle = item.querySelector<HTMLButtonElement>(".tc-toggle");
     const titleEl = item.querySelector<HTMLElement>(".tc-title");
-    const doToggle = (): void => item.classList.toggle("open");
+    const doToggle = (): void => {
+      item.classList.toggle("open");
+    };
     toggle?.addEventListener("click", doToggle);
     if (hasDetail) titleEl?.addEventListener("click", doToggle);
 
