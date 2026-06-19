@@ -63,4 +63,22 @@ mod tests {
     fn flags_fair_when_close() {
         assert_eq!(assess(10800, 6.0).status, Fairness::Fair);
     }
+    #[test]
+    fn boundary_abs_diff_exactly_one_is_fair() {
+        // 12600s -> deserved 7.0; assigned 6.0 -> |diff| == 1.0
+        assert_eq!(assess(12600, 6.0).status, Fairness::Fair);
+    }
+    #[test]
+    fn boundary_relative_exactly_twenty_percent_is_fair() {
+        // 21600s -> deserved 12.0; assigned 10.0 -> rel == 0.20
+        assert_eq!(assess(21600, 10.0).status, Fairness::Fair);
+    }
+    #[test]
+    fn assigned_zero_with_work_is_under_pointed() {
+        assert_eq!(assess(3600, 0.0).status, Fairness::UnderPointed);
+    }
+    #[test]
+    fn assigned_zero_no_work_is_fair() {
+        assert_eq!(assess(0, 0.0).status, Fairness::Fair);
+    }
 }

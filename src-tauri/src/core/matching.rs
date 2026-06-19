@@ -7,6 +7,10 @@ fn key_re() -> &'static Regex {
 }
 
 /// Extract the first Jira-style ticket key from a string, if any.
+///
+/// Uses `\b` word boundaries, so keys directly adjacent to underscores or letters
+/// (e.g. `branch_PROJ-42`) are intentionally NOT matched -- real Jira keys in window
+/// titles are space/slash delimited.
 pub fn extract_ticket_key(text: &str) -> Option<String> {
     key_re().find(text).map(|m| m.as_str().to_string())
 }
@@ -32,5 +36,14 @@ mod tests {
     #[test]
     fn picks_first_key_when_multiple() {
         assert_eq!(extract_ticket_key("AB-1 vs CD-2"), Some("AB-1".to_string()));
+    }
+    #[test]
+    fn lowercase_only_returns_none() {
+        assert_eq!(extract_ticket_key("abc-12"), None);
+    }
+    #[test]
+    fn underscore_adjacent_key_is_missed() {
+        // `\b` does not break between `_` and a letter, so this key is intentionally missed.
+        assert_eq!(extract_ticket_key("branch_PROJ-42"), None);
     }
 }

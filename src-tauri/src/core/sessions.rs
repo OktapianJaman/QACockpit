@@ -3,6 +3,12 @@ use crate::core::types::{ActivityBlock, Sample};
 /// Merge raw samples into activity blocks.
 /// `interval` = expected seconds between samples; a gap > 2*interval closes a block.
 /// `idle_threshold` = idle_seconds at/above which a sample is considered idle.
+///
+/// Duration model: a block's duration is `end - start`, i.e. the span between its
+/// first and last sample. A window seen in only one sample therefore has duration 0,
+/// and every block under-counts by up to `interval` seconds past its last sample.
+/// This is an accepted, bounded approximation for v1 (negligible versus hour-scale
+/// totals); we deliberately do NOT add `interval` to avoid over-counting.
 pub fn merge_samples(samples: &[Sample], interval: i64, idle_threshold: u64) -> Vec<ActivityBlock> {
     let mut blocks: Vec<ActivityBlock> = Vec::new();
     for sm in samples {
@@ -73,5 +79,41 @@ mod tests {
     fn gap_larger_than_two_intervals_splits() {
         let samples = vec![s(0, "VS Code", "a", 0), s(100, "VS Code", "a", 0)]; // gap 100 > 2*5
         assert_eq!(merge_samples(&samples, 5, 180).len(), 2);
+    }
+
+    #[test]
+    fn gap_at_exactly_two_intervals_merges() {
+        let samples = vec![s(0, "VS Code", "a", 0), s(10, "VS Code", "a", 0)]; // gap 10 == 2*5
+        assert_eq!(merge_samples(&samples, 5, 180).len(), 1);
+    }
+
+    #[test]
+    fn gap_just_over_two_intervals_splits() {
+        let samples = vec![s(0, "VS Code", "a", 0), s(11, "VS Code", "a", 0)]; // gap 11 > 2*5
+        assert_eq!(merge_samples(&samples, 5, 180).len(), 2);
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(merge_samples(&[], 5, 180).len(), 0);
+    }
+
+    #[test]
+    fn single_sample_makes_one_zero_duration_block() {
+        let blocks = merge_samples(&[s(0, "VS Code", "a", 0)], 5, 180);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].duration_secs(), 0);
+    }
+
+    #[test]
+    fn idle_change_splits_same_window() {
+        let samples = vec![
+            s(0, "VS Code", "a", 0),
+            s(5, "VS Code", "a", 200),
+            s(10, "VS Code", "a", 0),
+        ];
+        let blocks = merge_samples(&samples, 5, 180);
+        assert_eq!(blocks.len(), 3);
+        assert!(blocks[1].is_idle);
     }
 }
