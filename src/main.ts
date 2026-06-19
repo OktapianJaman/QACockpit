@@ -62,6 +62,9 @@ interface AppConfig {
   github_token: string;
   github_repos: string;
   gemma_model: string;
+  ai_provider: string;
+  gemini_api_key: string;
+  gemini_model: string;
 }
 
 const CONFIG_KEYS: (keyof AppConfig)[] = [
@@ -75,6 +78,9 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "github_token",
   "github_repos",
   "gemma_model",
+  "ai_provider",
+  "gemini_api_key",
+  "gemini_model",
 ];
 
 // ---------------------------------------------------------------------------

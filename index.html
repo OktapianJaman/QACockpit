@@ -180,6 +180,19 @@
             <select id="cfg-gemma_model"></select>
             <small id="gemma-hint" class="field-hint"></small>
           </label>
+          <label>AI Provider
+            <select id="cfg-ai_provider">
+              <option value="">Lokal (LM Studio)</option>
+              <option value="gemini">Google Gemini (cloud)</option>
+            </select>
+            <small class="field-hint">Lokal pakai Gemma di LM Studio. Gemini pakai API key di bawah.</small>
+          </label>
+          <label>Gemini API Key
+            <input type="password" id="cfg-gemini_api_key" placeholder="AIza..." autocomplete="off" />
+          </label>
+          <label>Gemini Model
+            <input type="text" id="cfg-gemini_model" placeholder="gemini-2.5-flash" />
+          </label>
           <div class="settings-actions">
             <button type="button" id="settings-cancel" class="btn">Batal</button>
             <button type="submit" class="btn primary">Simpan</button>
