@@ -17,6 +17,10 @@ pub const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
 /// Cap on how many activity blocks we list in a summary prompt.
 const MAX_BLOCKS: usize = 20;
 
+/// Friendly Indonesian message shown when the local AI cannot be reached.
+const AI_UNAVAILABLE: &str =
+    "(AI lokal tidak tersedia — pastikan LM Studio jalan di localhost:1234)";
+
 /// Build an OpenAI-compatible chat-completion request body.
 pub fn build_chat_request(model: &str, prompt: &str) -> Value {
     json!({
@@ -121,6 +125,47 @@ pub fn explain_fairness_prompt(items: &[(String, Assessment)]) -> String {
 
     s.push_str("\nBerikan penjelasan dan saran poin untuk tiap tiket di atas.");
     s
+}
+
+/// POST a prompt to LM Studio and return the model's reply.
+///
+/// Degrades gracefully: any failure (LM Studio down, timeout, bad payload)
+/// returns [`AI_UNAVAILABLE`] instead of erroring or panicking.
+pub fn complete(model: &str, prompt: &str) -> String {
+    let body = build_chat_request(model, prompt);
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return AI_UNAVAILABLE.to_string(),
+    };
+
+    let resp = match client.post(LM_STUDIO_URL).json(&body).send() {
+        Ok(r) => r,
+        Err(_) => return AI_UNAVAILABLE.to_string(),
+    };
+
+    let text = match resp.text() {
+        Ok(t) => t,
+        Err(_) => return AI_UNAVAILABLE.to_string(),
+    };
+
+    match parse_chat_response(&text) {
+        Ok(content) => content,
+        Err(_) => AI_UNAVAILABLE.to_string(),
+    }
+}
+
+/// Convenience: summarize the workday via the local model.
+pub fn daily_summary(model: &str, blocks: &[ActivityBlock], tickets: &[JiraTicket]) -> String {
+    complete(model, &daily_summary_prompt(blocks, tickets))
+}
+
+/// Convenience: explain story-point fairness via the local model.
+pub fn explain_fairness(model: &str, items: &[(String, Assessment)]) -> String {
+    complete(model, &explain_fairness_prompt(items))
 }
 
 #[cfg(test)]
