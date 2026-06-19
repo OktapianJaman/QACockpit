@@ -446,6 +446,39 @@ function closeTransitionPicker(): void {
   $("transition-list").innerHTML = "";
 }
 
+// --- actual-point prompt (shown before a transition) ---
+type PointResult = { cancelled: boolean; points: number | null };
+let pointResolve: ((r: PointResult) => void) | null = null;
+
+function settlePoint(r: PointResult): void {
+  show($("point-overlay"), false);
+  const res = pointResolve;
+  pointResolve = null;
+  res?.(r);
+}
+
+/** Ask for the actual point before moving; prefilled with the current value. */
+function promptActualPoint(message: string, current: number | null): Promise<PointResult> {
+  if (pointResolve) settlePoint({ cancelled: true, points: current });
+  $("point-msg").textContent = message;
+  const input = $("point-input") as HTMLInputElement;
+  input.value = current == null ? "" : String(current);
+  show($("point-overlay"), true);
+  input.focus();
+  input.select();
+  return new Promise<PointResult>((resolve) => {
+    pointResolve = resolve;
+  });
+}
+
+/** Read the point input and settle the prompt as confirmed. */
+function confirmPointPrompt(): void {
+  const raw = ($("point-input") as HTMLInputElement).value.trim();
+  let points: number | null = raw === "" ? null : Number(raw);
+  if (points !== null && Number.isNaN(points)) points = null;
+  settlePoint({ cancelled: false, points });
+}
+
 /** Entry point from a ticket's "shift status" action: fetch transitions and
  *  let the user pick one, confirm, then perform it and refresh. */
 async function shiftStatus(key: string): Promise<void> {
@@ -489,15 +522,21 @@ function showTransitionPicker(key: string, trans: JiraTransition[]): void {
 async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
   closeTransitionPicker();
   const target = t.to_status || t.name;
-  const ok = await confirmDialog(
-    `Geser ${key} ke "${target}"? Ini mengubah status di Jira beneran.`
+  const current = ticketByKey(key)?.story_points ?? null;
+  const res = await promptActualPoint(
+    `Geser ${key} ke "${target}". Isi actual point (opsional), lalu lanjut.`,
+    current
   );
-  if (!ok) return;
+  if (res.cancelled) return;
   try {
+    // Set the actual point first (only if it changed), then transition.
+    if (res.points !== current) {
+      await invoke("set_story_points", { key, points: res.points });
+    }
     // Tauri maps snake_case command params (transition_id) to camelCase.
     // Pass to_status so the local DB mirror updates → board reflects it.
     await invoke("transition_issue", { key, transitionId: t.id, toStatus: target });
-    toast(`Status ${key} diubah.`);
+    toast(`Status ${key} diubah${res.points != null ? ` · ${res.points} pts` : ""}.`);
     await refreshBoard();
   } catch (e) {
     toast(`Gagal ubah status: ${errStr(e)}`, "error");
@@ -1265,6 +1304,13 @@ function wireEvents(): void {
   // Confirm modal (promise-based; resolves on OK/Cancel/backdrop).
   $("confirm-ok").addEventListener("click", () => settleConfirm(true));
   $("confirm-cancel").addEventListener("click", () => settleConfirm(false));
+  $("point-ok").addEventListener("click", () => confirmPointPrompt());
+  $("point-cancel").addEventListener("click", () =>
+    settlePoint({ cancelled: true, points: null })
+  );
+  $("point-input").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") confirmPointPrompt();
+  });
   $("confirm-overlay").addEventListener("click", (e) => {
     if (e.target === $("confirm-overlay")) settleConfirm(false);
   });

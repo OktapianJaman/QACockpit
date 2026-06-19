@@ -124,6 +124,20 @@
       </div>
     </div>
 
+    <!-- Actual-point prompt before a status transition -->
+    <div id="point-overlay" class="overlay hidden">
+      <div class="confirm-panel card">
+        <p id="point-msg"></p>
+        <label class="point-label">Actual point
+          <input id="point-input" type="number" min="0" step="0.5" placeholder="kosongkan kalau ga diisi" />
+        </label>
+        <div class="confirm-actions">
+          <button id="point-cancel" class="btn">Batal</button>
+          <button id="point-ok" class="btn primary">Lanjut geser</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Generic confirm modal (used before any write to Jira) -->
     <div id="confirm-overlay" class="overlay hidden">
       <div class="confirm-panel card">
