@@ -1,20 +1,67 @@
 mod ai;
+mod commands;
 mod core;
 mod db;
 mod integrations;
 mod recorder;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use commands::AppState;
+use recorder::Recorder;
+use std::path::PathBuf;
+
+// Retained so the default template frontend (replaced in M7) still resolves.
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// Resolve the on-disk database path, creating the parent directory.
+/// Uses `~/Library/Application Support/site.hexalabs.qacockpit/qacockpit.db`.
+fn resolve_db_path() -> PathBuf {
+    let base = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let dir = base
+        .join("Library")
+        .join("Application Support")
+        .join("site.hexalabs.qacockpit");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("qacockpit.db")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let db_path = resolve_db_path().to_string_lossy().to_string();
+
+    // Ensure the schema exists before any command runs.
+    if let Err(e) = db::open(&db_path) {
+        eprintln!("failed to initialize database at {db_path}: {e}");
+    }
+
+    let state = AppState {
+        recorder: Recorder::new(db_path.clone()),
+        db_path,
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::recorder_start,
+            commands::recorder_stop,
+            commands::recorder_status,
+            commands::screen_recording_ok,
+            commands::get_config,
+            commands::set_config,
+            commands::sync_now,
+            commands::recompute,
+            commands::save_note,
+            commands::set_ticket_for_block,
+            commands::generate_ai_summary,
+            commands::get_dashboard,
+            commands::today,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

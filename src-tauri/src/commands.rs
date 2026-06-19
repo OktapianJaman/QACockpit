@@ -1,0 +1,551 @@
+//! Tauri command layer — the integration keystone.
+//!
+//! Commands are kept THIN: they open a short-lived db connection (rusqlite
+//! `Connection` is not `Sync`, so it must not live in shared state) and delegate
+//! to plain, testable functions where there is real logic — chiefly
+//! [`build_dashboard`], the aggregator behind [`get_dashboard`].
+
+use serde::{Deserialize, Serialize};
+
+use crate::core::fairness::{assess, deserved_points, Fairness};
+use crate::db;
+use crate::integrations;
+use crate::recorder::Recorder;
+use rusqlite::Connection;
+
+/// Shared application state held by Tauri. The `Recorder` is `Send + Sync`;
+/// the db is opened per-command from `db_path` (never stored open in state).
+pub struct AppState {
+    pub recorder: Recorder,
+    pub db_path: String,
+}
+
+impl AppState {
+    fn conn(&self) -> Result<Connection, String> {
+        db::open(&self.db_path).map_err(|e| e.to_string())
+    }
+}
+
+/// Today's date in the LOCAL timezone as `YYYY-MM-DD`.
+pub fn local_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/// All configuration values, surfaced to/accepted from the frontend as one blob.
+/// Tokens are included — this is a local, single-user app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub jira_base_url: String,
+    pub jira_email: String,
+    pub jira_token: String,
+    pub jira_story_point_field: String,
+    pub github_token: String,
+    pub gemma_model: String,
+}
+
+const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
+
+fn load_config(conn: &Connection) -> Result<AppConfig, String> {
+    let get = |k: &str| db::get_config(conn, k).map_err(|e| e.to_string());
+    let spf = get("jira_story_point_field")?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_STORY_POINT_FIELD.to_string());
+    Ok(AppConfig {
+        jira_base_url: get("jira_base_url")?.unwrap_or_default(),
+        jira_email: get("jira_email")?.unwrap_or_default(),
+        jira_token: get("jira_token")?.unwrap_or_default(),
+        jira_story_point_field: spf,
+        github_token: get("github_token")?.unwrap_or_default(),
+        gemma_model: get("gemma_model")?.unwrap_or_default(),
+    })
+}
+
+fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
+    let set = |k: &str, v: &str| db::set_config(conn, k, v).map_err(|e| e.to_string());
+    set("jira_base_url", &cfg.jira_base_url)?;
+    set("jira_email", &cfg.jira_email)?;
+    set("jira_token", &cfg.jira_token)?;
+    set("jira_story_point_field", &cfg.jira_story_point_field)?;
+    set("github_token", &cfg.github_token)?;
+    set("gemma_model", &cfg.gemma_model)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard aggregation (pure, testable)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct DashboardHeader {
+    pub deserved_total: f64,
+    pub assigned_total: f64,
+    pub net_work_secs: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TicketRow {
+    pub key: String,
+    pub summary: String,
+    pub status: String,
+    pub story_points: Option<f64>,
+    pub worked_secs: i64,
+    pub deserved: f64,
+    pub assigned: f64,
+    pub fairness: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TimelineRow {
+    pub id: i64,
+    pub app: String,
+    pub title: String,
+    pub start: String,
+    pub end: String,
+    pub minutes: i64,
+    pub is_idle: bool,
+    pub ticket_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PrRow {
+    pub number: i64,
+    pub repo: String,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub updated: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Dashboard {
+    pub day: String,
+    pub header: DashboardHeader,
+    pub tickets: Vec<TicketRow>,
+    pub timeline: Vec<TimelineRow>,
+    pub prs: Vec<PrRow>,
+    pub notes: String,
+    pub ai_summary: String,
+}
+
+fn fairness_label(f: &Fairness) -> &'static str {
+    match f {
+        Fairness::Fair => "Fair",
+        Fairness::UnderPointed => "UnderPointed",
+        Fairness::OverPointed => "OverPointed",
+    }
+}
+
+/// Look up a jira ticket's (summary, status, story_points) by key, if known.
+fn lookup_jira(conn: &Connection, key: &str) -> (String, String, Option<f64>) {
+    conn.query_row(
+        "SELECT summary, status, story_points FROM jira_tickets WHERE key = ?1",
+        [key],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<f64>>(2)?,
+            ))
+        },
+    )
+    .unwrap_or_else(|_| (String::new(), String::new(), None))
+}
+
+/// Build the full dashboard for `day` from the database. Pure aggregation over a
+/// connection — no Tauri, no network — so it is unit-testable end to end.
+pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String> {
+    let map = |e: anyhow::Error| e.to_string();
+
+    // --- ticket rows from the per-day rollup ---
+    let ticket_time = db::get_ticket_time(conn, day).map_err(map)?;
+    let mut tickets = Vec::with_capacity(ticket_time.len());
+    let mut worked_total: i64 = 0;
+    let mut assigned_total: f64 = 0.0;
+    for (key, worked_secs) in ticket_time {
+        let (summary, status, story_points) = lookup_jira(conn, &key);
+        let assigned = story_points.unwrap_or(0.0);
+        let a = assess(worked_secs, assigned);
+        worked_total += worked_secs;
+        assigned_total += assigned;
+        tickets.push(TicketRow {
+            key,
+            summary,
+            status,
+            story_points,
+            worked_secs,
+            deserved: a.deserved,
+            assigned: a.assigned,
+            fairness: fairness_label(&a.status).to_string(),
+        });
+    }
+
+    let header = DashboardHeader {
+        deserved_total: deserved_points(worked_total),
+        assigned_total,
+        net_work_secs: worked_total,
+    };
+
+    // --- timeline: all blocks for the day (incl. idle), with row ids ---
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, app, title, start, end, is_idle, ticket_key
+             FROM activity_blocks
+             WHERE substr(start, 1, 10) = ?1
+             ORDER BY start",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([day], |row| {
+            let start: String = row.get(3)?;
+            let end: String = row.get(4)?;
+            let minutes = duration_minutes(&start, &end);
+            Ok(TimelineRow {
+                id: row.get(0)?,
+                app: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                title: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                start,
+                end,
+                minutes,
+                is_idle: row.get::<_, i64>(5)? != 0,
+                ticket_key: row.get::<_, Option<String>>(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut timeline = Vec::new();
+    for r in rows {
+        timeline.push(r.map_err(|e| e.to_string())?);
+    }
+
+    // --- all pull requests ---
+    let mut pstmt = conn
+        .prepare("SELECT number, repo, title, state, url, updated FROM pull_requests ORDER BY updated DESC")
+        .map_err(|e| e.to_string())?;
+    let prows = pstmt
+        .query_map([], |row| {
+            Ok(PrRow {
+                number: row.get(0)?,
+                repo: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                title: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                state: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                url: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                updated: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut prs = Vec::new();
+    for r in prows {
+        prs.push(r.map_err(|e| e.to_string())?);
+    }
+
+    let notes = db::get_note(conn, day).map_err(map)?.unwrap_or_default();
+    let ai_summary = db::get_ai_summary(conn, day, "daily")
+        .map_err(map)?
+        .unwrap_or_default();
+
+    Ok(Dashboard {
+        day: day.to_string(),
+        header,
+        tickets,
+        timeline,
+        prs,
+        notes,
+        ai_summary,
+    })
+}
+
+/// Whole-minute duration between two RFC3339 timestamps; 0 on parse failure.
+fn duration_minutes(start: &str, end: &str) -> i64 {
+    let parse = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc))
+    };
+    match (parse(start), parse(end)) {
+        (Some(s), Some(e)) => ((e - s).num_seconds().max(0)) / 60,
+        _ => 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands (thin wrappers)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct SyncResult {
+    pub tickets: usize,
+    pub prs: usize,
+}
+
+#[tauri::command]
+pub fn recorder_start(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.recorder.start();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn recorder_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Persist buffered samples before stopping the sampling thread.
+    state.recorder.flush().map_err(|e| e.to_string())?;
+    state.recorder.stop();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn recorder_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.recorder.is_running())
+}
+
+#[tauri::command]
+pub fn screen_recording_ok() -> Result<bool, String> {
+    Ok(crate::recorder::window::screen_recording_permission_ok())
+}
+
+#[tauri::command]
+pub fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
+    let conn = state.conn()?;
+    load_config(&conn)
+}
+
+#[tauri::command]
+pub fn set_config(state: tauri::State<'_, AppState>, cfg: AppConfig) -> Result<(), String> {
+    let conn = state.conn()?;
+    save_config(&conn, &cfg)
+}
+
+#[tauri::command]
+pub fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+
+    if cfg.jira_base_url.is_empty() || cfg.jira_email.is_empty() || cfg.jira_token.is_empty() {
+        return Err("Jira credentials missing (set base URL, email, and token in Settings)".into());
+    }
+    if cfg.github_token.is_empty() {
+        return Err("GitHub token missing (set it in Settings)".into());
+    }
+
+    let tickets = integrations::jira::fetch_my_issues(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &cfg.jira_story_point_field,
+    )
+    .map_err(|e| format!("Jira sync failed: {e}"))?;
+
+    let prs = integrations::github::fetch_my_prs(&cfg.github_token)
+        .map_err(|e| format!("GitHub sync failed: {e}"))?;
+
+    integrations::save_tickets(&conn, &tickets).map_err(|e| e.to_string())?;
+    integrations::save_prs(&conn, &prs).map_err(|e| e.to_string())?;
+
+    Ok(SyncResult {
+        tickets: tickets.len(),
+        prs: prs.len(),
+    })
+}
+
+#[tauri::command]
+pub fn recompute(state: tauri::State<'_, AppState>, day: String) -> Result<(), String> {
+    // Flush any buffered samples first so the rollup sees the latest blocks.
+    state.recorder.flush().map_err(|e| e.to_string())?;
+    let conn = state.conn()?;
+    db::recompute_ticket_time(&conn, &day).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_note(
+    state: tauri::State<'_, AppState>,
+    day: String,
+    body: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::set_note(&conn, &day, &body).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_ticket_for_block(
+    state: tauri::State<'_, AppState>,
+    block_id: i64,
+    ticket_key: String,
+) -> Result<(), String> {
+    let conn = state.conn()?;
+    db::set_block_ticket(&conn, block_id, &ticket_key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn generate_ai_summary(
+    state: tauri::State<'_, AppState>,
+    day: String,
+) -> Result<String, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+
+    let blocks = db::list_blocks_for_day(&conn, &day).map_err(|e| e.to_string())?;
+
+    // Tickets that have time logged today, hydrated from jira_tickets.
+    let ticket_time = db::get_ticket_time(&conn, &day).map_err(|e| e.to_string())?;
+    let mut tickets = Vec::new();
+    for (key, _secs) in ticket_time {
+        let (summary, status, story_points) = lookup_jira(&conn, &key);
+        tickets.push(crate::integrations::jira::JiraTicket {
+            key,
+            summary,
+            status,
+            story_points,
+            updated: String::new(),
+        });
+    }
+
+    let summary = crate::ai::gemma::daily_summary(&cfg.gemma_model, &blocks, &tickets);
+    db::set_ai_summary(&conn, &day, "daily", &summary).map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+#[tauri::command]
+pub fn get_dashboard(
+    state: tauri::State<'_, AppState>,
+    day: String,
+) -> Result<Dashboard, String> {
+    let conn = state.conn()?;
+    build_dashboard(&conn, &day)
+}
+
+#[tauri::command]
+pub fn today() -> Result<String, String> {
+    Ok(local_today())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::ActivityBlock;
+    use crate::integrations::jira::JiraTicket;
+    use chrono::{NaiveDateTime, TimeZone, Utc};
+
+    fn ts(s: &str) -> chrono::DateTime<Utc> {
+        let s = s.trim_end_matches('Z');
+        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").unwrap();
+        chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn build_dashboard_aggregates_tickets_header_and_timeline() {
+        let conn = db::open(":memory:").unwrap();
+        let day = "2026-06-18";
+
+        // ABC-1: 1 hour worked (3600s) -> deserved 2.0 points.
+        db::insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 work".into(),
+                start: ts("2026-06-18T09:00:00Z"),
+                end: ts("2026-06-18T10:00:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        // An idle block (should appear in timeline, excluded from rollup).
+        db::insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Chrome".into(),
+                title: "ABC-1 away".into(),
+                start: ts("2026-06-18T10:00:00Z"),
+                end: ts("2026-06-18T10:30:00Z"),
+                is_idle: true,
+            },
+        )
+        .unwrap();
+
+        // Jira ticket assigned 5 story points -> over the deserved 2.0 by >1 and
+        // >20% -> OverPointed.
+        integrations::save_tickets(
+            &conn,
+            &[JiraTicket {
+                key: "ABC-1".into(),
+                summary: "Login bug".into(),
+                status: "In Progress".into(),
+                story_points: Some(5.0),
+                updated: "2026-06-18T08:00:00Z".into(),
+            }],
+        )
+        .unwrap();
+
+        db::recompute_ticket_time(&conn, day).unwrap();
+
+        let dash = build_dashboard(&conn, day).unwrap();
+
+        assert_eq!(dash.day, day);
+        // Header
+        assert_eq!(dash.header.net_work_secs, 3600);
+        assert!((dash.header.deserved_total - 2.0).abs() < 1e-9);
+        assert!((dash.header.assigned_total - 5.0).abs() < 1e-9);
+
+        // Ticket row
+        assert_eq!(dash.tickets.len(), 1);
+        let t = &dash.tickets[0];
+        assert_eq!(t.key, "ABC-1");
+        assert_eq!(t.summary, "Login bug");
+        assert_eq!(t.worked_secs, 3600);
+        assert!((t.deserved - 2.0).abs() < 1e-9);
+        assert_eq!(t.story_points, Some(5.0));
+        assert_eq!(t.fairness, "OverPointed");
+
+        // Timeline includes both blocks (idle marked).
+        assert_eq!(dash.timeline.len(), 2);
+        assert!(dash.timeline.iter().any(|b| b.is_idle));
+        assert!(dash.timeline.iter().all(|b| b.id > 0));
+        let worked = dash.timeline.iter().find(|b| !b.is_idle).unwrap();
+        assert_eq!(worked.minutes, 60);
+        assert_eq!(worked.ticket_key.as_deref(), Some("ABC-1"));
+
+        // No PRs/notes/summary seeded.
+        assert!(dash.prs.is_empty());
+        assert_eq!(dash.notes, "");
+        assert_eq!(dash.ai_summary, "");
+    }
+
+    #[test]
+    fn build_dashboard_unknown_ticket_defaults_to_under_pointed() {
+        let conn = db::open(":memory:").unwrap();
+        let day = "2026-06-18";
+
+        // Worked on XYZ-9 but no jira_tickets row exists -> assigned defaults 0.
+        db::insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Editor".into(),
+                title: "XYZ-9 coding".into(),
+                start: ts("2026-06-18T09:00:00Z"),
+                end: ts("2026-06-18T10:00:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        db::recompute_ticket_time(&conn, day).unwrap();
+
+        let dash = build_dashboard(&conn, day).unwrap();
+        assert_eq!(dash.tickets.len(), 1);
+        let t = &dash.tickets[0];
+        assert_eq!(t.key, "XYZ-9");
+        assert_eq!(t.story_points, None);
+        assert!((t.assigned - 0.0).abs() < 1e-9);
+        // deserved 2.0 vs assigned 0 -> UnderPointed.
+        assert_eq!(t.fairness, "UnderPointed");
+        assert_eq!(dash.header.assigned_total, 0.0);
+
+        // Notes round-trip into the dashboard.
+        db::set_note(&conn, day, "did stuff").unwrap();
+        let dash2 = build_dashboard(&conn, day).unwrap();
+        assert_eq!(dash2.notes, "did stuff");
+    }
+}
