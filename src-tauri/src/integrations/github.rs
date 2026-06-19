@@ -139,7 +139,10 @@ pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "qa-cockpit")
-        .query(&[("q", format!("{key} type:pr"))])
+        // Quote the key for an EXACT phrase match — otherwise GitHub matches the
+        // bare token (e.g. "QAT" also hits ML "quantization-aware training" PRs
+        // across all of GitHub). `in:title,body` keeps it to where keys appear.
+        .query(&[("q", format!("\"{key}\" in:title,body type:pr"))])
         .send()?
         .error_for_status()?
         .text()?;

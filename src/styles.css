@@ -626,6 +626,37 @@ h2 {
 
 /* ---------------- PR tab ---------------- */
 
+.pr-manual {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pr-link-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color-scheme: dark;
+}
+
+.pr-link-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pr-or {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 4px 0 10px;
+}
+
 .pr-actions {
   margin-bottom: 14px;
 }

@@ -636,6 +636,28 @@ function renderPrs(prs: PrRef[]): void {
   }
 }
 
+/** Summarize a PR pasted as a GitHub URL (reliable alternative to auto-search). */
+async function summarizeFromLink(): Promise<void> {
+  const input = $<HTMLInputElement>("pr-link");
+  const url = input.value.trim();
+  const m = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/i);
+  if (!m) {
+    toast("Link PR-nya nggak valid. Contoh: https://github.com/owner/repo/pull/123", "error");
+    return;
+  }
+  const pr: PrRef = {
+    number: Number(m[3]),
+    repo: `${m[1]}/${m[2]}`,
+    title: `PR #${m[3]}`,
+    state: "",
+    url,
+  };
+  renderPrs([pr]);
+  const btn = $("pr-list").querySelector<HTMLButtonElement>(".pr-summarize");
+  const panel = $("pr-list").querySelector<HTMLDivElement>(".pr-review");
+  if (btn && panel) await summarizePr(pr, btn, panel);
+}
+
 /** "🔍 Cari PR": search GitHub for PRs that mention the ticket key. */
 async function searchPrs(): Promise<void> {
   if (!detailKey) return;
@@ -942,6 +964,10 @@ function wireEvents(): void {
   $("tab-testcases").addEventListener("click", () => selectTab("testcases"));
   $("tab-pr").addEventListener("click", () => selectTab("pr"));
   $("pr-search").addEventListener("click", () => void searchPrs());
+  $("pr-link-go").addEventListener("click", () => void summarizeFromLink());
+  $("pr-link").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") void summarizeFromLink();
+  });
   $("tc-generate").addEventListener("click", () => void generateTestCases());
   $("tc-add-toggle").addEventListener("click", () => {
     const form = $("tc-add-form");
