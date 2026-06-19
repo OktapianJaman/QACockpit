@@ -120,6 +120,82 @@ pub fn get_ticket_time(conn: &Connection, day: &str) -> Result<Vec<(String, i64)
     Ok(out)
 }
 
+/// Read a single config value by key. Returns `Ok(None)` if the key is absent.
+pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT value FROM config WHERE key = ?1")?;
+    let mut rows = stmt.query([key])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get::<_, String>(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Upsert a single config value (INSERT OR REPLACE on key).
+pub fn set_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Upsert the note body for `day`.
+pub fn set_note(conn: &Connection, day: &str, body: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO notes (day, body) VALUES (?1, ?2)",
+        rusqlite::params![day, body],
+    )?;
+    Ok(())
+}
+
+/// Read the note body for `day`, or `Ok(None)` if none exists.
+pub fn get_note(conn: &Connection, day: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT body FROM notes WHERE day = ?1")?;
+    let mut rows = stmt.query([day])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get::<_, String>(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Set the `ticket_key` of a single activity block by its row id (manual correction).
+pub fn set_block_ticket(conn: &Connection, block_id: i64, ticket_key: &str) -> Result<()> {
+    let key: Option<&str> = if ticket_key.trim().is_empty() {
+        None
+    } else {
+        Some(ticket_key)
+    };
+    conn.execute(
+        "UPDATE activity_blocks SET ticket_key = ?1 WHERE id = ?2",
+        rusqlite::params![key, block_id],
+    )?;
+    Ok(())
+}
+
+/// Upsert an AI summary for `day` of the given `kind`.
+pub fn set_ai_summary(conn: &Connection, day: &str, kind: &str, body: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO ai_summaries (day, kind, body, generated_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![day, kind, body, chrono::Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Read the AI summary body for `day` of the given `kind`, or `Ok(None)`.
+pub fn get_ai_summary(conn: &Connection, day: &str, kind: &str) -> Result<Option<String>> {
+    let mut stmt =
+        conn.prepare("SELECT body FROM ai_summaries WHERE day = ?1 AND kind = ?2")?;
+    let mut rows = stmt.query([day, kind])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get::<_, String>(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +364,58 @@ mod tests {
 
         let got = get_ticket_time(&conn, "2026-06-18").unwrap();
         assert_eq!(got, vec![("ABC-1".to_string(), 600)]);
+    }
+
+    #[test]
+    fn config_round_trips_and_upserts() {
+        let conn = open(":memory:").unwrap();
+        assert_eq!(get_config(&conn, "jira_email").unwrap(), None);
+        set_config(&conn, "jira_email", "a@b.co").unwrap();
+        assert_eq!(
+            get_config(&conn, "jira_email").unwrap(),
+            Some("a@b.co".to_string())
+        );
+        // Upsert overwrites.
+        set_config(&conn, "jira_email", "x@y.co").unwrap();
+        assert_eq!(
+            get_config(&conn, "jira_email").unwrap(),
+            Some("x@y.co".to_string())
+        );
+    }
+
+    #[test]
+    fn set_block_ticket_overrides_and_clears() {
+        let conn = open(":memory:").unwrap();
+        insert_block(
+            &conn,
+            &ActivityBlock {
+                app: "Slack".into(),
+                title: "no key here".into(),
+                start: ts("2026-06-18T09:00:00Z"),
+                end: ts("2026-06-18T09:10:00Z"),
+                is_idle: false,
+            },
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM activity_blocks LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        set_block_ticket(&conn, id, "ABC-9").unwrap();
+        let key: Option<String> = conn
+            .query_row("SELECT ticket_key FROM activity_blocks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key, Some("ABC-9".to_string()));
+
+        // Empty string clears it back to NULL.
+        set_block_ticket(&conn, id, "").unwrap();
+        let key2: Option<String> = conn
+            .query_row("SELECT ticket_key FROM activity_blocks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key2, None);
     }
 }
