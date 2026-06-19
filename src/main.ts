@@ -211,6 +211,43 @@ function renderTickets(tickets: TicketRow[]): void {
     .join("");
 }
 
+interface TimelineGroup {
+  ids: number[];
+  app: string;
+  title: string;
+  start: string;
+  end: string;
+  secs: number;
+  is_idle: boolean;
+  ticket_key: string | null;
+}
+
+/** Collapse consecutive blocks of the same window into one row. */
+function groupTimeline(timeline: TimelineRow[]): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  for (const b of timeline) {
+    const last = groups[groups.length - 1];
+    if (last && last.app === b.app && last.title === b.title && last.is_idle === b.is_idle) {
+      last.ids.push(b.id);
+      last.end = b.end;
+      last.secs += b.minutes * 60;
+      if (!last.ticket_key && b.ticket_key) last.ticket_key = b.ticket_key;
+    } else {
+      groups.push({
+        ids: [b.id],
+        app: b.app,
+        title: b.title,
+        start: b.start,
+        end: b.end,
+        secs: b.minutes * 60,
+        is_idle: b.is_idle,
+        ticket_key: b.ticket_key,
+      });
+    }
+  }
+  return groups;
+}
+
 function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
   const wrap = $("timeline");
   show($("timeline-empty"), timeline.length === 0);
@@ -220,38 +257,38 @@ function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
   }
 
   const keys = tickets.map((t) => t.key);
+  const groups = groupTimeline(timeline);
 
-  wrap.innerHTML = timeline
-    .map((b) => {
+  wrap.innerHTML = groups
+    .map((g) => {
       const opts = ['<option value="">—</option>']
         .concat(
           keys.map(
             (k) =>
               `<option value="${esc(k)}"${
-                k === b.ticket_key ? " selected" : ""
+                k === g.ticket_key ? " selected" : ""
               }>${esc(k)}</option>`
           )
         )
         .join("");
-      // If the current ticket_key isn't in the known list, add it so the
-      // selection isn't silently lost.
       const extra =
-        b.ticket_key && !keys.includes(b.ticket_key)
-          ? `<option value="${esc(b.ticket_key)}" selected>${esc(b.ticket_key)}</option>`
+        g.ticket_key && !keys.includes(g.ticket_key)
+          ? `<option value="${esc(g.ticket_key)}" selected>${esc(g.ticket_key)}</option>`
           : "";
+      const mins = Math.round(g.secs / 60);
       return `
-        <div class="tl-block${b.is_idle ? " idle" : ""}">
-          <div class="tl-time">${esc(fmtTime(b.start))}–${esc(fmtTime(b.end))}</div>
+        <div class="tl-block${g.is_idle ? " idle" : ""}">
+          <div class="tl-time">${esc(fmtTime(g.start))}–${esc(fmtTime(g.end))}</div>
           <div class="tl-main">
             <div class="tl-title">
-              <span class="tl-app">${esc(b.app || "—")}</span>
+              <span class="tl-app">${esc(g.app || "—")}</span>
               <span class="tl-sep">·</span>
-              <span class="tl-name ellipsis" title="${esc(b.title)}">${esc(b.title || "—")}</span>
-              ${b.is_idle ? '<span class="idle-tag">idle</span>' : ""}
+              <span class="tl-name ellipsis" title="${esc(g.title)}">${esc(g.title || "—")}</span>
+              ${g.is_idle ? '<span class="idle-tag">idle</span>' : ""}
             </div>
-            <div class="tl-meta">${b.minutes}m</div>
+            <div class="tl-meta">${mins}m</div>
           </div>
-          <select class="tl-select" data-block="${b.id}">
+          <select class="tl-select" data-blocks="${g.ids.join(",")}">
             ${opts}${extra}
           </select>
         </div>`;
@@ -260,8 +297,8 @@ function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
 
   wrap.querySelectorAll<HTMLSelectElement>(".tl-select").forEach((sel) => {
     sel.addEventListener("change", () => {
-      const blockId = Number(sel.dataset.block);
-      void onTicketCorrection(blockId, sel.value);
+      const ids = (sel.dataset.blocks ?? "").split(",").map(Number).filter((n) => !isNaN(n));
+      void onTicketCorrection(ids, sel.value);
     });
   });
 }
@@ -396,10 +433,13 @@ async function doSync(): Promise<void> {
   }
 }
 
-async function onTicketCorrection(blockId: number, ticketKey: string): Promise<void> {
+async function onTicketCorrection(blockIds: number[], ticketKey: string): Promise<void> {
   try {
     // Tauri auto-maps snake_case command params (block_id/ticket_key) to camelCase.
-    await invoke("set_ticket_for_block", { blockId, ticketKey });
+    // A timeline row may represent several merged blocks → correct each.
+    for (const blockId of blockIds) {
+      await invoke("set_ticket_for_block", { blockId, ticketKey });
+    }
     await invoke("recompute", { day: currentDay });
     await loadDashboard();
     toast("Koreksi tiket tersimpan.");
@@ -446,12 +486,36 @@ async function saveNote(): Promise<void> {
 // Settings
 // ---------------------------------------------------------------------------
 
+async function populateModelDropdown(current: string): Promise<void> {
+  const sel = $("cfg-gemma_model") as HTMLSelectElement;
+  const hint = $("gemma-hint");
+  let models: string[] = [];
+  try {
+    models = await invoke<string[]>("list_models");
+  } catch {
+    models = [];
+  }
+  // Always keep the saved value selectable even if LM Studio is offline.
+  if (current && !models.includes(current)) models.unshift(current);
+  if (models.length === 0) {
+    sel.innerHTML = `<option value="">(LM Studio tidak terdeteksi)</option>`;
+    hint.textContent = "Nyalakan LM Studio lalu buka Settings lagi untuk memuat daftar model.";
+  } else {
+    sel.innerHTML = models
+      .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`)
+      .join("");
+    hint.textContent = "Daftar model diambil dari LM Studio.";
+  }
+}
+
 async function openSettings(): Promise<void> {
   try {
     const cfg = await invoke<AppConfig>("get_config");
     for (const k of CONFIG_KEYS) {
+      if (k === "gemma_model") continue; // handled as a dropdown below
       ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
     }
+    await populateModelDropdown(cfg.gemma_model ?? "");
   } catch (e) {
     toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
   }

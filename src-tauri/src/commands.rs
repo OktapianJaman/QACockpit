@@ -419,6 +419,11 @@ pub fn today() -> Result<String, String> {
     Ok(local_today())
 }
 
+#[tauri::command]
+pub fn list_models() -> Result<Vec<String>, String> {
+    Ok(crate::ai::gemma::list_models())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

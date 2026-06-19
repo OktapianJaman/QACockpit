@@ -61,6 +61,7 @@ pub fn run() {
             commands::generate_ai_summary,
             commands::get_dashboard,
             commands::today,
+            commands::list_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

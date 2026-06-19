@@ -14,6 +14,9 @@ use crate::integrations::jira::JiraTicket;
 /// LM Studio OpenAI-compatible chat endpoint.
 pub const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
 
+/// LM Studio OpenAI-compatible models-list endpoint.
+pub const LM_STUDIO_MODELS_URL: &str = "http://localhost:1234/v1/models";
+
 /// Cap on how many activity blocks we list in a summary prompt.
 const MAX_BLOCKS: usize = 20;
 
@@ -55,6 +58,42 @@ pub fn parse_chat_response(json: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| anyhow!("response missing choices[0].message.content"))
+}
+
+/// Extract the model ids from an OpenAI-compatible `/v1/models` response
+/// (`data[].id`). Returns an empty list if the shape is unexpected.
+pub fn parse_models(json: &str) -> Result<Vec<String>> {
+    let root: Value = serde_json::from_str(json)?;
+    let ids = root
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ids)
+}
+
+/// Fetch the list of model ids loaded in LM Studio.
+///
+/// Degrades gracefully: returns an empty list (never errors) if LM Studio is
+/// not reachable, so the UI can fall back to manual entry.
+pub fn list_models() -> Vec<String> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let text = match client.get(LM_STUDIO_MODELS_URL).send().and_then(|r| r.text()) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    parse_models(&text).unwrap_or_default()
 }
 
 /// Build an Indonesian prompt asking Gemma to summarize the workday from
@@ -197,6 +236,20 @@ mod tests {
     #[test]
     fn parse_empty_object_is_err() {
         assert!(parse_chat_response("{}").is_err());
+    }
+
+    #[test]
+    fn parse_models_extracts_ids() {
+        let fixture = r#"{"data":[{"id":"gemma-4-e4b-it","object":"model"},
+                                  {"id":"text-embedding-nomic","object":"model"}],
+                          "object":"list"}"#;
+        let ids = parse_models(fixture).unwrap();
+        assert_eq!(ids, vec!["gemma-4-e4b-it", "text-embedding-nomic"]);
+    }
+
+    #[test]
+    fn parse_models_unexpected_shape_is_empty() {
+        assert!(parse_models("{}").unwrap().is_empty());
     }
 
     fn block(app: &str, title: &str, minutes: i64) -> ActivityBlock {
