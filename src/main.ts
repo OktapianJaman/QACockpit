@@ -386,19 +386,6 @@ async function refreshBoard(): Promise<void> {
 // Actions
 // ---------------------------------------------------------------------------
 
-async function doRefresh(): Promise<void> {
-  const btn = $<HTMLButtonElement>("refresh-btn");
-  btn.disabled = true;
-  const prev = btn.textContent;
-  btn.textContent = "Refresh…";
-  try {
-    await refreshBoard();
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
-}
-
 async function doSync(): Promise<void> {
   const btn = $<HTMLButtonElement>("sync-btn");
   btn.disabled = true;
@@ -523,20 +510,31 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
   closeTransitionPicker();
   const target = t.to_status || t.name;
   const current = ticketByKey(key)?.story_points ?? null;
-  const res = await promptActualPoint(
-    `Geser ${key} ke "${target}". Isi actual point (opsional), lalu lanjut.`,
-    current
-  );
-  if (res.cancelled) return;
+  // Only ask for the actual point when finishing QA (Passed/Failed). Other
+  // moves just confirm.
+  const isVerdict = /qa\s*passed|qa\s*failed|passed|failed/i.test(target);
+  let points: number | null = current;
+  if (isVerdict) {
+    const res = await promptActualPoint(
+      `Geser ${key} ke "${target}". Isi actual point QA-nya (opsional).`,
+      current
+    );
+    if (res.cancelled) return;
+    points = res.points;
+  } else {
+    const ok = await confirmDialog(`Geser ${key} ke "${target}"? Mengubah status di Jira.`);
+    if (!ok) return;
+  }
   try {
-    // Set the actual point first (only if it changed), then transition.
-    if (res.points !== current) {
-      await invoke("set_story_points", { key, points: res.points });
+    if (isVerdict && points !== current) {
+      await invoke("set_story_points", { key, points });
     }
     // Tauri maps snake_case command params (transition_id) to camelCase.
     // Pass to_status so the local DB mirror updates → board reflects it.
     await invoke("transition_issue", { key, transitionId: t.id, toStatus: target });
-    toast(`Status ${key} diubah${res.points != null ? ` · ${res.points} pts` : ""}.`);
+    toast(
+      `Status ${key} diubah${isVerdict && points != null ? ` · ${points} pts` : ""}.`
+    );
     await refreshBoard();
   } catch (e) {
     toast(`Gagal ubah status: ${errStr(e)}`, "error");
@@ -1274,7 +1272,6 @@ async function loadFromJira(): Promise<void> {
 
 function wireEvents(): void {
   $("sync-btn").addEventListener("click", () => void doSync());
-  $("refresh-btn").addEventListener("click", () => void doRefresh());
   $("board-search").addEventListener("input", (e) => {
     boardSearch = (e.target as HTMLInputElement).value;
     renderBoard(boardTickets);
