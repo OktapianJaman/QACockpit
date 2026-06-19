@@ -62,6 +62,9 @@ pub fn run() {
             commands::get_dashboard,
             commands::today,
             commands::list_models,
+            commands::list_jira_fields,
+            commands::list_jira_projects,
+            commands::list_jira_assignees,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

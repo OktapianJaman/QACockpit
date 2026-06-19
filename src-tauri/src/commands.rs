@@ -436,6 +436,59 @@ pub fn list_models() -> Result<Vec<String>, String> {
     Ok(crate::ai::gemma::list_models())
 }
 
+/// Reject when the three required Jira credentials aren't all present.
+fn require_jira_creds(cfg: &AppConfig) -> Result<(), String> {
+    if cfg.jira_base_url.is_empty() || cfg.jira_email.is_empty() || cfg.jira_token.is_empty() {
+        return Err("Isi Base URL, Email, dan API token Jira dulu".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_jira_fields(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<integrations::jira::JiraField>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    integrations::jira::fetch_fields(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_jira_projects(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<integrations::jira::JiraProject>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    integrations::jira::fetch_projects(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_jira_assignees(
+    state: tauri::State<'_, AppState>,
+    project: String,
+) -> Result<Vec<integrations::jira::JiraUser>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+    // Fall back to the saved project when the caller passes an empty one.
+    let project = if project.trim().is_empty() {
+        cfg.jira_project.clone()
+    } else {
+        project
+    };
+    integrations::jira::fetch_assignees(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &project,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
