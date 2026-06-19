@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#5b9bff"/>
+      <stop offset="1" stop-color="#3457d5"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- squircle background -->
+  <rect x="64" y="64" width="896" height="896" rx="212" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="448" rx="212" fill="url(#shine)"/>
+  <!-- gauge dial (cockpit), open at the bottom -->
+  <path d="M 326 700 A 248 248 0 1 1 698 700"
+        fill="none" stroke="#ffffff" stroke-opacity="0.28"
+        stroke-width="50" stroke-linecap="round"/>
+  <!-- check mark (QA passed) -->
+  <path d="M 392 516 L 474 600 L 660 398"
+        fill="none" stroke="#ffffff" stroke-width="74"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
