@@ -173,16 +173,29 @@ h2 {
   margin-bottom: 12px;
 }
 
-/* ---------------- Kanban board ---------------- */
+/* ---------------- Ticket table (board) ---------------- */
 
-.board {
+.board-toolbar {
   display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  overflow-x: auto;
-  padding-bottom: 8px;
-  /* Fill the viewport height below the top bar so columns can scroll. */
-  min-height: calc(100vh - 18px * 2 - 56px);
+  margin-bottom: 12px;
+}
+
+.board-search {
+  width: 280px;
+  max-width: 100%;
+  background: var(--bg-elev2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-size: 13px;
+  font-family: inherit;
+  color-scheme: dark;
+}
+
+.board-search:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .board-empty {
@@ -193,105 +206,82 @@ h2 {
   padding: 80px 16px;
 }
 
-.column {
-  flex: 0 0 290px;
-  width: 290px;
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100vh - 18px * 2 - 56px);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: border-color 0.15s, background 0.15s;
+.board-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
 }
 
-.column.drag-over {
-  border-color: var(--accent);
-  background: rgba(79, 140, 255, 0.06);
-}
-
-.column-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px;
+.board-table th,
+.board-table td {
+  text-align: left;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+  vertical-align: middle;
 }
 
-.col-name {
-  font-size: 12px;
-  font-weight: 700;
+.board-table th {
+  position: sticky;
+  top: 56px;
+  background: var(--bg);
+  color: var(--text-faint);
+  font-weight: 600;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.board-table th.num,
+.board-table td.bp {
   white-space: nowrap;
 }
 
-.col-count {
-  flex: none;
-  min-width: 22px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 700;
+.board-table tbody tr:hover {
+  background: var(--bg-elev2);
+}
+
+.board-table td.bk {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.board-table td.bj {
+  color: var(--text);
+  cursor: pointer;
+  max-width: 520px;
+}
+
+.board-table td.bk:hover,
+.board-table td.bj:hover {
+  color: var(--accent);
+}
+
+.board-noresult {
   color: var(--text-faint);
-  background: var(--bg-elev2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 1px 7px;
+  font-style: italic;
+  text-align: center;
 }
 
-.column-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  overflow-y: auto;
-  flex: 1;
-  min-height: 60px;
-}
-
-/* ---------------- Ticket card ---------------- */
-
-.card-ticket {
+.status-btn {
   background: var(--bg-elev2);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 11px;
-  cursor: grab;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s, background 0.12s;
 }
 
-.card-ticket:hover {
+.status-btn:hover {
   border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
-}
-
-.card-ticket.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.ct-key {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-faint);
-  letter-spacing: 0.3px;
-}
-
-.ct-summary {
-  margin: 5px 0 9px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--text);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  background: #252b38;
 }
 
 .ct-points {

@@ -157,10 +157,7 @@ const STATUS_ORDER = [
 ];
 
 let boardTickets: BoardTicket[] = [];
-
-// Key + source status of the card currently being dragged (HTML5 DnD).
-let dragKey: string | null = null;
-let dragStatus: string | null = null;
+let boardSearch = "";
 
 /** Rank a status by the preferred order; unmatched statuses rank last. */
 function statusRank(status: string): number {
@@ -172,62 +169,34 @@ function statusRank(status: string): number {
   return STATUS_ORDER.length;
 }
 
-/** Distinct statuses among tickets, ordered by preferred sequence then alpha. */
-function orderedStatuses(tickets: BoardTicket[]): string[] {
-  const seen = [...new Set(tickets.map((t) => t.status).filter(Boolean))];
-  return seen.sort((a, b) => {
-    const ra = statusRank(a);
-    const rb = statusRank(b);
-    if (ra !== rb) return ra - rb;
-    return a.localeCompare(b);
-  });
-}
-
 function pointsLabel(pts: number | null): string {
   return pts == null ? "— pts" : `${fmtPoints(pts)} pts`;
 }
 
-/** Build one card element for a ticket (draggable, inline point editing). */
-function buildCard(t: BoardTicket): HTMLElement {
-  const card = document.createElement("div");
-  card.className = "card-ticket";
-  card.draggable = true;
-  card.dataset.key = t.key;
-  card.dataset.status = t.status;
-
-  card.innerHTML = `
-    <div class="ct-key mono">${esc(t.key)}</div>
-    <div class="ct-summary">${esc(t.summary || "—")}</div>
-    <button class="ct-points" type="button" title="Klik untuk ubah story point">${esc(
+/** Build one table row for a ticket (click key/title → detail; inline points;
+ *  status button → transition picker). No drag — WKWebView DnD is unreliable. */
+function buildRow(t: BoardTicket): HTMLElement {
+  const tr = document.createElement("tr");
+  tr.className = "brow";
+  tr.innerHTML = `
+    <td class="bk mono">${esc(t.key)}</td>
+    <td class="bj">${esc(t.summary || "—")}</td>
+    <td class="bp"><button class="ct-points" type="button" title="Klik untuk ubah story point">${esc(
       pointsLabel(t.story_points)
-    )}</button>`;
+    )}</button></td>
+    <td class="bs"><button class="status-btn" type="button" title="Klik untuk ganti status">${esc(
+      t.status || "—"
+    )} ▾</button></td>`;
 
-  card.addEventListener("dragstart", (e) => {
-    dragKey = t.key;
-    dragStatus = t.status;
-    card.classList.add("dragging");
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", t.key);
-    }
-  });
-  card.addEventListener("dragend", () => {
-    dragKey = null;
-    dragStatus = null;
-    card.classList.remove("dragging");
-  });
-
-  const ptsBtn = card.querySelector<HTMLButtonElement>(".ct-points");
-  ptsBtn?.addEventListener("click", (e) => {
-    e.stopPropagation(); // don't bubble to the card's open-detail handler
-    startPointEdit(t, ptsBtn);
-  });
-
-  // Single-click opens the ticket detail modal (status change is reachable from
-  // inside the modal + drag-drop). The points-badge click is guarded above.
-  card.addEventListener("click", () => void openDetail(t.key));
-
-  return card;
+  tr.querySelector(".bk")?.addEventListener("click", () => void openDetail(t.key));
+  tr.querySelector(".bj")?.addEventListener("click", () => void openDetail(t.key));
+  const ptsBtn = tr.querySelector<HTMLButtonElement>(".ct-points");
+  ptsBtn?.addEventListener("click", () => startPointEdit(t, ptsBtn));
+  tr.querySelector<HTMLButtonElement>(".status-btn")?.addEventListener(
+    "click",
+    () => void shiftStatus(t.key)
+  );
+  return tr;
 }
 
 /** Turn the points badge into a number input; commit on Enter/blur. */
@@ -277,86 +246,38 @@ async function savePoints(key: string, points: number | null): Promise<void> {
   await refreshBoard();
 }
 
-/** Build a column (drop zone) for one status, filled with its cards. */
-function buildColumn(status: string, tickets: BoardTicket[]): HTMLElement {
-  const col = document.createElement("section");
-  col.className = "column";
-  col.dataset.status = status;
-
-  const head = document.createElement("div");
-  head.className = "column-head";
-  head.innerHTML = `
-    <span class="col-name" title="${esc(status)}">${esc(status)}</span>
-    <span class="col-count">${tickets.length}</span>`;
-  col.appendChild(head);
-
-  const body = document.createElement("div");
-  body.className = "column-body";
-  for (const t of tickets) body.appendChild(buildCard(t));
-  col.appendChild(body);
-
-  // Drop-zone wiring.
-  col.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    col.classList.add("drag-over");
-  });
-  col.addEventListener("dragleave", (e) => {
-    // Only clear when the pointer actually leaves the column, not a child.
-    if (!col.contains(e.relatedTarget as Node | null)) col.classList.remove("drag-over");
-  });
-  col.addEventListener("drop", (e) => {
-    e.preventDefault();
-    col.classList.remove("drag-over");
-    const key = dragKey ?? e.dataTransfer?.getData("text/plain") ?? "";
-    const from = dragStatus;
-    if (key) void onDrop(key, from, status);
-  });
-
-  return col;
-}
-
-/** Handle a card dropped onto a column: find a matching Jira transition. */
-async function onDrop(key: string, fromStatus: string | null, toStatus: string): Promise<void> {
-  if (fromStatus !== null && fromStatus.toLowerCase() === toStatus.toLowerCase()) {
-    return; // same column — nothing to do
-  }
-  let trans: JiraTransition[];
-  try {
-    trans = await invoke<JiraTransition[]>("list_transitions", { key });
-  } catch (e) {
-    toast(`Gagal ambil transisi: ${errStr(e)}`, "error");
-    await refreshBoard();
-    return;
-  }
-  const t = trans.find((x) => x.to_status.toLowerCase() === toStatus.toLowerCase());
-  if (!t) {
-    toast(`Nggak ada transisi langsung ke "${toStatus}" di Jira.`, "error");
-    await refreshBoard();
-    return;
-  }
-  if (await confirmDialog(`Pindahkan ${key} ke "${toStatus}"?`)) {
-    try {
-      await invoke("transition_issue", { key, transitionId: t.id });
-      toast("Status diubah");
-    } catch (e) {
-      toast(`Gagal ubah status: ${errStr(e)}`, "error");
-    }
-  }
-  await refreshBoard();
-}
-
+/** Render the ticket table, grouped/sorted by status and filtered by search. */
 function renderBoard(tickets: BoardTicket[]): void {
   const board = $("board");
-  board.innerHTML = "";
   show($("board-empty"), tickets.length === 0);
-  if (tickets.length === 0) return;
-
-  const statuses = orderedStatuses(tickets);
-  for (const status of statuses) {
-    const inCol = tickets.filter((t) => t.status === status);
-    board.appendChild(buildColumn(status, inCol));
+  if (tickets.length === 0) {
+    board.innerHTML = "";
+    return;
   }
+
+  const q = boardSearch.trim().toLowerCase();
+  const rows = tickets
+    .filter(
+      (t) => !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      const r = statusRank(a.status) - statusRank(b.status);
+      return r !== 0 ? r : a.key.localeCompare(b.key);
+    });
+
+  board.innerHTML = `
+    <table class="board-table">
+      <thead>
+        <tr><th>Tiket</th><th>Judul</th><th class="num">Poin</th><th>Status</th></tr>
+      </thead>
+      <tbody id="board-tbody"></tbody>
+    </table>`;
+  const tb = $("board-tbody");
+  if (rows.length === 0) {
+    tb.innerHTML = `<tr><td colspan="4" class="board-noresult">Nggak ada tiket yang cocok.</td></tr>`;
+    return;
+  }
+  for (const t of rows) tb.appendChild(buildRow(t));
 }
 
 async function refreshBoard(): Promise<void> {
@@ -970,6 +891,10 @@ async function loadFromJira(): Promise<void> {
 function wireEvents(): void {
   $("sync-btn").addEventListener("click", () => void doSync());
   $("refresh-btn").addEventListener("click", () => void doRefresh());
+  $("board-search").addEventListener("input", (e) => {
+    boardSearch = (e.target as HTMLInputElement).value;
+    renderBoard(boardTickets);
+  });
 
   $("gear-btn").addEventListener("click", () => void openSettings());
   $("settings-close").addEventListener("click", closeSettings);
