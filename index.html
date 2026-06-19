@@ -32,6 +32,45 @@
       </div>
     </main>
 
+    <!-- Ticket detail modal: summary + status + test-case management -->
+    <div id="detail-overlay" class="overlay hidden">
+      <div class="detail-panel card">
+        <div class="card-head">
+          <h2 id="detail-key" class="mono">—</h2>
+          <button id="detail-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <p id="detail-summary" class="detail-summary"></p>
+        <div class="detail-status-row">
+          <span id="detail-status" class="status-chip"></span>
+          <button id="detail-shift" class="btn small">Geser status</button>
+        </div>
+
+        <div class="tc-section">
+          <div class="tc-head">
+            <h2>Test Cases</h2>
+            <span id="tc-counter" class="tc-counter"></span>
+          </div>
+          <div class="tc-actions">
+            <button id="tc-generate" class="btn small primary">✨ Generate pakai AI</button>
+            <button id="tc-add-toggle" class="btn small">+ Tambah manual</button>
+          </div>
+
+          <form id="tc-add-form" class="tc-add-form hidden">
+            <input type="text" id="tc-title" placeholder="Judul test case (wajib)" />
+            <input type="text" id="tc-steps" placeholder="Langkah (opsional)" />
+            <input type="text" id="tc-expected" placeholder="Hasil yang diharapkan (opsional)" />
+            <div class="tc-add-actions">
+              <button type="button" id="tc-add-cancel" class="btn small">Batal</button>
+              <button type="submit" class="btn small primary">Simpan</button>
+            </div>
+          </form>
+
+          <div id="tc-list" class="tc-list"></div>
+          <div id="tc-empty" class="tc-empty hidden">Belum ada test case. Generate pakai AI atau tambah manual.</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Pick-transition modal: lists available Jira transitions as buttons -->
     <div id="transition-overlay" class="overlay hidden">
       <div class="confirm-panel card">

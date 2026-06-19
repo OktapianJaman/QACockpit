@@ -435,3 +435,170 @@ h2 {
   text-align: left;
   width: 100%;
 }
+
+/* ---------------- Ticket detail modal ---------------- */
+
+.detail-panel {
+  width: 100%;
+  max-width: 560px;
+  box-shadow: var(--shadow);
+  margin: 0;
+}
+
+.detail-summary {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.detail-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-chip {
+  display: inline-block;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* ---------------- Test-case section ---------------- */
+
+.tc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.tc-counter {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.tc-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tc-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tc-add-form input {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.tc-add-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tc-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tc-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  font-style: italic;
+  padding: 12px 4px;
+}
+
+.tc-item {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 11px;
+}
+
+.tc-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tc-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tc-field {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+.tc-label {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.tc-item-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.tc-pill {
+  flex: none;
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.tc-pill.untested {
+  background: var(--bg-elev);
+  border-color: var(--border);
+  color: var(--text-faint);
+}
+
+.tc-pill.passed {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: var(--green);
+}
+
+.tc-pill.failed {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--red);
+}

@@ -12,6 +12,15 @@ interface BoardTicket {
   story_points: number | null;
 }
 
+interface TestCase {
+  id: number;
+  ticket_key: string;
+  title: string;
+  steps: string;
+  expected: string;
+  status: string;
+}
+
 interface JiraField {
   id: string;
   name: string;
@@ -191,11 +200,14 @@ function buildCard(t: BoardTicket): HTMLElement {
   });
 
   const ptsBtn = card.querySelector<HTMLButtonElement>(".ct-points");
-  ptsBtn?.addEventListener("click", () => startPointEdit(t, ptsBtn));
+  ptsBtn?.addEventListener("click", (e) => {
+    e.stopPropagation(); // don't bubble to the card's open-detail handler
+    startPointEdit(t, ptsBtn);
+  });
 
-  // Double-click opens the explicit transition picker (alternative to drag-drop,
-  // handy when the target status isn't a visible column).
-  card.addEventListener("dblclick", () => void shiftStatus(t.key));
+  // Single-click opens the ticket detail modal (status change is reachable from
+  // inside the modal + drag-drop). The points-badge click is guarded above.
+  card.addEventListener("click", () => void openDetail(t.key));
 
   return card;
 }
@@ -460,6 +472,173 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Ticket detail modal + test cases
+// ---------------------------------------------------------------------------
+
+// The ticket whose detail modal is currently open (null = closed).
+let detailKey: string | null = null;
+
+/** Find a loaded board ticket by key (module already holds them). */
+function ticketByKey(key: string): BoardTicket | undefined {
+  return boardTickets.find((t) => t.key === key);
+}
+
+function closeDetail(): void {
+  detailKey = null;
+  show($("detail-overlay"), false);
+  show($("tc-add-form"), false);
+}
+
+/** Open the detail modal for a ticket: header, summary, status, test cases. */
+async function openDetail(key: string): Promise<void> {
+  detailKey = key;
+  const t = ticketByKey(key);
+  $("detail-key").textContent = key;
+  $("detail-summary").textContent = t?.summary || "—";
+  const statusEl = $("detail-status");
+  statusEl.textContent = t?.status || "—";
+  show($("tc-add-form"), false);
+  ($("tc-add-form") as HTMLFormElement).reset();
+  $("tc-list").innerHTML = "";
+  show($("tc-empty"), false);
+  $("tc-counter").textContent = "";
+  show($("detail-overlay"), true);
+  await loadTestCases(key);
+}
+
+/** Pill class for a test-case status. */
+function tcStatusClass(status: string): string {
+  if (status === "passed") return "tc-pill passed";
+  if (status === "failed") return "tc-pill failed";
+  return "tc-pill untested";
+}
+
+function tcStatusLabel(status: string): string {
+  if (status === "passed") return "✅ passed";
+  if (status === "failed") return "❌ failed";
+  return "untested";
+}
+
+/** Render the test-case list + counter for the open ticket. */
+function renderTestCases(cases: TestCase[]): void {
+  const list = $("tc-list");
+  show($("tc-empty"), cases.length === 0);
+
+  const passed = cases.filter((c) => c.status === "passed").length;
+  const failed = cases.filter((c) => c.status === "failed").length;
+  $("tc-counter").textContent =
+    cases.length === 0
+      ? ""
+      : `${cases.length} test case · ${passed} ✅ · ${failed} ❌`;
+
+  list.innerHTML = "";
+  for (const c of cases) {
+    const item = document.createElement("div");
+    item.className = "tc-item";
+    item.innerHTML = `
+      <div class="tc-item-head">
+        <span class="${tcStatusClass(c.status)}">${esc(tcStatusLabel(c.status))}</span>
+        <span class="tc-title">${esc(c.title)}</span>
+      </div>
+      ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
+      ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
+      <div class="tc-item-actions">
+        <button class="btn small tc-pass" type="button">✅ Pass</button>
+        <button class="btn small tc-fail" type="button">❌ Fail</button>
+        <button class="btn small tc-del" type="button" title="Hapus">🗑</button>
+      </div>`;
+
+    item.querySelector<HTMLButtonElement>(".tc-pass")?.addEventListener("click", () =>
+      void setTestCaseStatus(c.id, "passed")
+    );
+    item.querySelector<HTMLButtonElement>(".tc-fail")?.addEventListener("click", () =>
+      void setTestCaseStatus(c.id, "failed")
+    );
+    item.querySelector<HTMLButtonElement>(".tc-del")?.addEventListener("click", () =>
+      void deleteTestCase(c.id, c.title)
+    );
+
+    list.appendChild(item);
+  }
+}
+
+/** Load + render the test cases for a key (no-op if the modal moved on). */
+async function loadTestCases(key: string): Promise<void> {
+  try {
+    const cases = await invoke<TestCase[]>("list_test_cases", { key });
+    if (detailKey === key) renderTestCases(cases);
+  } catch (e) {
+    toast(`Gagal memuat test case: ${errStr(e)}`, "error");
+  }
+}
+
+async function setTestCaseStatus(id: number, status: string): Promise<void> {
+  if (!detailKey) return;
+  try {
+    await invoke("set_test_case_status", { id, status });
+  } catch (e) {
+    toast(`Gagal ubah status test case: ${errStr(e)}`, "error");
+  }
+  await loadTestCases(detailKey);
+}
+
+async function deleteTestCase(id: number, title: string): Promise<void> {
+  if (!detailKey) return;
+  const ok = await confirmDialog(`Hapus test case "${title}"?`);
+  if (!ok) return;
+  try {
+    await invoke("delete_test_case", { id });
+    toast("Test case dihapus.");
+  } catch (e) {
+    toast(`Gagal hapus test case: ${errStr(e)}`, "error");
+  }
+  await loadTestCases(detailKey);
+}
+
+/** Submit the manual add form for the open ticket. */
+async function addTestCase(e: Event): Promise<void> {
+  e.preventDefault();
+  if (!detailKey) return;
+  const title = ($("tc-title") as HTMLInputElement).value.trim();
+  if (!title) {
+    toast("Judul test case wajib diisi.", "error");
+    return;
+  }
+  const steps = ($("tc-steps") as HTMLInputElement).value.trim();
+  const expected = ($("tc-expected") as HTMLInputElement).value.trim();
+  try {
+    await invoke("add_test_case", { key: detailKey, title, steps, expected });
+    ($("tc-add-form") as HTMLFormElement).reset();
+    show($("tc-add-form"), false);
+    toast("Test case ditambahkan.");
+  } catch (err) {
+    toast(`Gagal tambah test case: ${errStr(err)}`, "error");
+  }
+  await loadTestCases(detailKey);
+}
+
+/** "✨ Generate pakai AI": draft cases from the ticket summary (slow, local). */
+async function generateTestCases(): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const summary = ticketByKey(key)?.summary || "";
+  const btn = $<HTMLButtonElement>("tc-generate");
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi bikin test case… (model lokal, agak lama)";
+  try {
+    const cases = await invoke<TestCase[]>("generate_test_cases", { key, summary });
+    if (detailKey === key) renderTestCases(cases);
+    toast("Test case dibuat oleh AI.");
+  } catch (e) {
+    toast(`Gagal generate: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -696,6 +875,28 @@ function wireEvents(): void {
   $("transition-overlay").addEventListener("click", (e) => {
     if (e.target === $("transition-overlay")) closeTransitionPicker();
   });
+
+  // Ticket detail modal.
+  $("detail-close").addEventListener("click", closeDetail);
+  $("detail-overlay").addEventListener("click", (e) => {
+    if (e.target === $("detail-overlay")) closeDetail();
+  });
+  $("detail-shift").addEventListener("click", () => {
+    const key = detailKey;
+    if (key) void shiftStatus(key);
+  });
+  $("tc-generate").addEventListener("click", () => void generateTestCases());
+  $("tc-add-toggle").addEventListener("click", () => {
+    const form = $("tc-add-form");
+    const nowHidden = form.classList.contains("hidden");
+    show(form, nowHidden);
+    if (nowHidden) ($("tc-title") as HTMLInputElement).focus();
+  });
+  $("tc-add-cancel").addEventListener("click", () => {
+    ($("tc-add-form") as HTMLFormElement).reset();
+    show($("tc-add-form"), false);
+  });
+  $("tc-add-form").addEventListener("submit", (e) => void addTestCase(e));
 }
 
 async function init(): Promise<void> {
