@@ -4,8 +4,12 @@ pub mod jira;
 use anyhow::Result;
 use rusqlite::Connection;
 
-/// Upsert Jira tickets into the `jira_tickets` table (INSERT OR REPLACE on key).
+/// Replace all rows in `jira_tickets` with the given tickets (DELETE all, then
+/// insert). A full replace — not an upsert — so narrowing the sync filter (e.g.
+/// to the active sprint) drops tickets that no longer match instead of leaving
+/// stale ones behind.
 pub fn save_tickets(conn: &Connection, tickets: &[jira::JiraTicket]) -> Result<()> {
+    conn.execute("DELETE FROM jira_tickets", [])?;
     let mut stmt = conn.prepare(
         "INSERT OR REPLACE INTO jira_tickets (key, summary, status, story_points, updated)
          VALUES (?1, ?2, ?3, ?4, ?5)",
