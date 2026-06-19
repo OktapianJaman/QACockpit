@@ -590,6 +590,29 @@ async function generateTestCases(): Promise<void> {
   }
 }
 
+/** "📤 Kirim hasil ke Jira": post the ticket's test results as a Jira comment. */
+async function postTestResults(): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const ok = await confirmDialog(
+    `Kirim hasil test ke Jira sebagai komentar di ${key}?`
+  );
+  if (!ok) return;
+  const btn = $<HTMLButtonElement>("tc-post-jira");
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi kirim ke Jira…";
+  try {
+    const line = await invoke<string>("post_test_results", { key });
+    toast(`Terkirim: ${line}`);
+  } catch (e) {
+    toast(errStr(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // PR tab (find a ticket's PRs + on-demand AI review)
 // ---------------------------------------------------------------------------
@@ -625,12 +648,18 @@ function renderPrs(prs: PrRef[]): void {
         <span class="${prStateClass(pr.state)}">${esc(pr.state)}</span>
       </div>
       <span class="pr-title">${esc(pr.title)}</span>
-      <button class="btn small primary pr-summarize" type="button">✨ Ringkas + apa yang dites</button>
+      <div class="pr-item-actions">
+        <button class="btn small primary pr-summarize" type="button">✨ Ringkas + apa yang dites</button>
+        <button class="btn small pr-gen-tc" type="button">✨ Buat test case dari PR ini</button>
+      </div>
       <div class="pr-review hidden"></div>`;
 
     const btn = item.querySelector<HTMLButtonElement>(".pr-summarize");
     const panel = item.querySelector<HTMLDivElement>(".pr-review");
     btn?.addEventListener("click", () => void summarizePr(pr, btn, panel!));
+
+    const genBtn = item.querySelector<HTMLButtonElement>(".pr-gen-tc");
+    genBtn?.addEventListener("click", () => void generateTestCasesFromPr(pr, genBtn));
 
     list.appendChild(item);
   }
@@ -703,6 +732,38 @@ async function summarizePr(
     panel.innerHTML = mdToHtml(review);
   } catch (e) {
     panel.classList.add("hidden");
+    toast(errStr(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+/** "✨ Buat test case dari PR ini": draft cases from the PR diff, then switch
+ *  to the Test Cases tab and reload. */
+async function generateTestCasesFromPr(
+  pr: PrRef,
+  btn: HTMLButtonElement
+): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const summary = ticketByKey(key)?.summary || "";
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi bikin test case dari PR… (model lokal, agak lama)";
+  try {
+    const cases = await invoke<TestCase[]>("generate_test_cases_from_pr", {
+      key,
+      summary,
+      repo: pr.repo,
+      number: pr.number,
+    });
+    toast(`${cases.length} test case dibuat dari PR.`);
+    if (detailKey === key) {
+      selectTab("testcases");
+      await loadTestCases(key);
+    }
+  } catch (e) {
     toast(errStr(e), "error");
   } finally {
     btn.disabled = false;
@@ -969,6 +1030,7 @@ function wireEvents(): void {
     if ((e as KeyboardEvent).key === "Enter") void summarizeFromLink();
   });
   $("tc-generate").addEventListener("click", () => void generateTestCases());
+  $("tc-post-jira").addEventListener("click", () => void postTestResults());
   $("tc-add-toggle").addEventListener("click", () => {
     const form = $("tc-add-form");
     const nowHidden = form.classList.contains("hidden");

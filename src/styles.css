@@ -702,6 +702,12 @@ h2 {
   margin-bottom: 8px;
 }
 
+.pr-item-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .pr-state {
   flex: none;
   display: inline-block;
