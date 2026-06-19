@@ -359,6 +359,25 @@ async function toggleRecorder(): Promise<void> {
   renderRecorderBtn();
 }
 
+async function doRefresh(): Promise<void> {
+  const btn = $<HTMLButtonElement>("refresh-btn");
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Refresh…";
+  try {
+    // recompute flushes the recorder's in-memory sample buffer to the DB
+    // (and rebuilds ticket_time) before we read the dashboard, so live
+    // activity shows up without having to stop the recorder first.
+    await invoke("recompute", { day: currentDay });
+    await loadDashboard();
+  } catch (e) {
+    toast(`Gagal refresh: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
 async function doSync(): Promise<void> {
   const btn = $<HTMLButtonElement>("sync-btn");
   btn.disabled = true;
@@ -477,7 +496,7 @@ async function checkPermission(): Promise<void> {
 function wireEvents(): void {
   $("rec-btn").addEventListener("click", () => void toggleRecorder());
   $("sync-btn").addEventListener("click", () => void doSync());
-  $("refresh-btn").addEventListener("click", () => void loadDashboard());
+  $("refresh-btn").addEventListener("click", () => void doRefresh());
   $("ai-btn").addEventListener("click", () => void generateAi());
   $("note-save").addEventListener("click", () => void saveNote());
   $("note-area").addEventListener("blur", () => void saveNote());
