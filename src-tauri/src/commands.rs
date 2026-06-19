@@ -804,6 +804,45 @@ pub fn generate_test_cases(
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// PR tab (on-demand: find a ticket's PR(s) + AI review of the diff)
+// ---------------------------------------------------------------------------
+
+const GITHUB_TOKEN_MISSING: &str = "Isi GitHub Token di Settings dulu buat fitur PR";
+
+/// Search GitHub for PRs that mention a ticket key.
+#[tauri::command]
+pub fn list_ticket_prs(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<Vec<integrations::github::PrRef>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    if cfg.github_token.is_empty() {
+        return Err(GITHUB_TOKEN_MISSING.into());
+    }
+    integrations::github::search_prs_for_key(&cfg.github_token, &key).map_err(|e| e.to_string())
+}
+
+/// Fetch a PR's diff and ask the local model to summarize it + "what to test".
+#[tauri::command]
+pub fn summarize_pr(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    summary: String,
+    repo: String,
+    number: i64,
+) -> Result<String, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    if cfg.github_token.is_empty() {
+        return Err(GITHUB_TOKEN_MISSING.into());
+    }
+    let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
+        .map_err(|e| e.to_string())?;
+    Ok(crate::ai::gemma::review_pr(&cfg.gemma_model, &key, &summary, &diff))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

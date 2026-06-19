@@ -237,6 +237,41 @@ pub fn generate_test_cases(
     parse_test_cases(&complete(model, &test_cases_prompt(summary, key)))
 }
 
+/// Max diff length embedded in a PR-review prompt (local model has a small
+/// context window). Diffs longer than this are truncated with a note.
+const MAX_DIFF_CHARS: usize = 8000;
+
+/// Build an Indonesian prompt asking Gemma, as a QA assistant, to review a PR
+/// diff for a ticket: (1) a short change summary, and (2) what a QA should test
+/// / risk areas. The diff is truncated to [`MAX_DIFF_CHARS`] before embedding;
+/// when truncated a "(diff dipotong)" note is appended.
+pub fn pr_review_prompt(key: &str, summary: &str, diff: &str) -> String {
+    let (diff_text, truncated) = if diff.chars().count() > MAX_DIFF_CHARS {
+        let cut: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+        (cut, true)
+    } else {
+        (diff.to_string(), false)
+    };
+    let note = if truncated { "\n(diff dipotong)" } else { "" };
+
+    format!(
+        "Kamu adalah asisten QA. Diberikan tiket Jira dan diff Pull Request-nya, \
+         bantu QA memahami perubahan dan apa yang harus dites.\n\n\
+         Tiket: {key}\n\
+         Ringkasan: {summary}\n\n\
+         Diff PR:\n\
+         ```diff\n{diff_text}{note}\n```\n\n\
+         Tulis dalam bahasa Indonesia dengan dua bagian:\n\
+         1. Ringkasan singkat perubahan (apa yang diubah dan kenapa).\n\
+         2. Apa yang harus dites / area berisiko (daftar poin yang perlu diperhatikan QA).\n"
+    )
+}
+
+/// Convenience: ask the local model to review a PR diff for a ticket.
+pub fn review_pr(model: &str, key: &str, summary: &str, diff: &str) -> String {
+    complete(model, &pr_review_prompt(key, summary, diff))
+}
+
 /// POST a prompt to LM Studio and return the model's reply.
 ///
 /// Degrades gracefully: any failure (LM Studio down, timeout, bad payload)
@@ -403,6 +438,26 @@ Cuma judul tanpa pipa
         // The "| langkah | hasil" line has an empty title and is skipped.
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "Valid");
+    }
+
+    #[test]
+    fn pr_review_prompt_contains_key_facts() {
+        let diff = "diff --git a/login.ts b/login.ts\n+const x = retry();";
+        let p = pr_review_prompt("QAT-7", "Login bug di halaman utama", diff);
+        assert!(p.contains("QAT-7"));
+        // Part of the diff is embedded.
+        assert!(p.contains("retry()"));
+        // Indonesian instruction word.
+        assert!(p.contains("dites") || p.contains("Ringkasan"));
+    }
+
+    #[test]
+    fn pr_review_prompt_truncates_long_diff() {
+        let diff = "x".repeat(MAX_DIFF_CHARS + 500);
+        let p = pr_review_prompt("QAT-1", "summary", &diff);
+        assert!(p.contains("(diff dipotong)"));
+        // The embedded diff body is capped (prompt is prefix + capped diff + suffix).
+        assert!(!p.contains(&"x".repeat(MAX_DIFF_CHARS + 1)));
     }
 
     #[test]

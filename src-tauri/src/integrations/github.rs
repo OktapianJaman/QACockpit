@@ -74,6 +74,93 @@ pub fn parse_prs(json: &str) -> Result<Vec<Pr>> {
     Ok(prs)
 }
 
+/// A pull request referenced by a ticket, as returned by `/search/issues`.
+/// Leaner than [`Pr`] (no `updated`); used by the on-demand PR tab.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PrRef {
+    pub number: i64,
+    pub repo: String,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+}
+
+/// Parse a GitHub `/search/issues` response into [`PrRef`]s. Reuses the same
+/// repo-derivation as [`parse_prs`].
+pub fn parse_pr_search(json: &str) -> Result<Vec<PrRef>> {
+    let root: Value = serde_json::from_str(json)?;
+    let items = root
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let mut prs = Vec::with_capacity(items.len());
+    for item in items {
+        let number = item.get("number").and_then(Value::as_i64).unwrap_or_default();
+        let title = item
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let state = item
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let url = item
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let repo = item
+            .get("repository_url")
+            .and_then(Value::as_str)
+            .map(repo_from_url)
+            .unwrap_or_default();
+
+        prs.push(PrRef {
+            number,
+            repo,
+            title,
+            state,
+            url,
+        });
+    }
+    Ok(prs)
+}
+
+/// Search GitHub for PRs that mention a ticket key (e.g. branch/title/body).
+/// Thin HTTP wrapper around `parse_pr_search`; not unit-tested.
+pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
+    let client = reqwest::blocking::Client::new();
+    let body = client
+        .get("https://api.github.com/search/issues")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "qa-cockpit")
+        .query(&[("q", format!("{key} type:pr"))])
+        .send()?
+        .error_for_status()?
+        .text()?;
+    parse_pr_search(&body)
+}
+
+/// Fetch the raw unified diff for a PR (`repo` = "OWNER/REPO").
+/// Thin HTTP wrapper; not unit-tested.
+pub fn fetch_pr_diff(token: &str, repo: &str, number: i64) -> Result<String> {
+    let client = reqwest::blocking::Client::new();
+    let diff = client
+        .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github.diff")
+        .header("User-Agent", "qa-cockpit")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    Ok(diff)
+}
+
 /// Fetch PRs authored by the authenticated user.
 /// Thin HTTP wrapper around `parse_prs`; not unit-tested.
 pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
@@ -141,5 +228,28 @@ mod tests {
         assert_eq!(prs[1].state, "closed");
         assert_eq!(prs[1].url, "https://github.com/OktapianJaman/katalon-utils/pull/7");
         assert_eq!(prs[1].updated, "2026-06-15T09:20:00Z");
+    }
+
+    #[test]
+    fn parse_pr_search_derives_repo_for_two_items() {
+        let prs = parse_pr_search(FIXTURE).unwrap();
+        assert_eq!(prs.len(), 2);
+
+        assert_eq!(
+            prs[0],
+            PrRef {
+                number: 42,
+                repo: "tr8-io/qa-cockpit".to_string(),
+                title: "Add retry to flaky e2e test".to_string(),
+                state: "open".to_string(),
+                url: "https://github.com/tr8-io/qa-cockpit/pull/42".to_string(),
+            }
+        );
+
+        assert_eq!(prs[1].number, 7);
+        assert_eq!(prs[1].repo, "OktapianJaman/katalon-utils");
+        assert_eq!(prs[1].title, "Fix selector for new modal");
+        assert_eq!(prs[1].state, "closed");
+        assert_eq!(prs[1].url, "https://github.com/OktapianJaman/katalon-utils/pull/7");
     }
 }

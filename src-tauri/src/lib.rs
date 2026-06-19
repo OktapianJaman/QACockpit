@@ -75,6 +75,8 @@ pub fn run() {
             commands::update_test_case,
             commands::delete_test_case,
             commands::generate_test_cases,
+            commands::list_ticket_prs,
+            commands::summarize_pr,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
