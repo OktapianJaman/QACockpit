@@ -161,25 +161,6 @@ function fmtTime(ts: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-interface ChipInfo {
-  cls: string;
-  emoji: string;
-  label: string;
-}
-
-function statusChip(f: Fairness): ChipInfo {
-  switch (f) {
-    case "Fair":
-      return { cls: "fair", emoji: "🟢", label: "Adil" };
-    case "UnderPointed":
-      return { cls: "under", emoji: "🔴", label: "Kurang poin" };
-    case "OverPointed":
-      return { cls: "over", emoji: "🟡", label: "Lebih poin" };
-    case "Untracked":
-      return { cls: "untracked", emoji: "⚪", label: "Belum dikerjain" };
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Toast / errors
 // ---------------------------------------------------------------------------
@@ -208,7 +189,6 @@ function errStr(e: unknown): string {
 
 function renderHeader(h: DashboardHeader): void {
   $("hdr-deserved").textContent = fmtPoints(h.deserved_total);
-  $("hdr-assigned").textContent = fmtPoints(h.assigned_total);
   $("hdr-worktime").textContent = formatSecs(h.net_work_secs);
 }
 
@@ -260,17 +240,16 @@ function renderTickets(tickets: TicketRow[]): void {
   }
   body.innerHTML = tickets
     .map((t) => {
-      const chip = statusChip(t.fairness);
-      const untracked = t.fairness === "Untracked";
-      const jam = untracked ? "—" : esc(formatSecs(t.worked_secs));
-      const harusnya = untracked ? "—" : esc(fmtPoints(t.deserved));
+      const untouched = t.worked_secs <= 0;
+      const jam = untouched ? "—" : esc(formatSecs(t.worked_secs));
+      // Points YOU earned from real work (hours × 2). No Jira-point comparison.
+      const poin = untouched ? "—" : esc(fmtPoints(t.deserved));
       return `
-        <tr class="row-${chip.cls}">
+        <tr${untouched ? ' class="row-untouched"' : ""}>
           <td class="mono">${esc(t.key)}</td>
           <td class="ellipsis" title="${esc(t.summary)}">${esc(t.summary || "—")}</td>
           <td class="num">${jam}</td>
-          <td class="num">${harusnya}</td>
-          <td class="num">${t.story_points == null ? "—" : esc(fmtPoints(t.assigned))}</td>
+          <td class="num">${poin}</td>
           <td>
             <div class="status-cell">
               <span class="status-text" title="${esc(t.status)}">${esc(t.status || "—")}</span>
