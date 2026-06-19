@@ -459,7 +459,9 @@ pub fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String>
         &cfg.jira_story_point_field,
         &cfg.jira_project,
         &cfg.jira_assignee,
-        &cfg.jira_status_category,
+        // Status filtering is now done in the ticket table, not at sync time, so
+        // we always pull all statuses (within the chosen sprint scope).
+        "",
         &cfg.jira_sprint_scope,
     )
     .map_err(|e| format!("Jira sync failed: {e}"))?;
