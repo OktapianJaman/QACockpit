@@ -47,7 +47,10 @@ pub struct AppConfig {
     pub jira_project: String,
     /// Assignee filter. Empty = the logged-in user (currentUser()).
     pub jira_assignee: String,
-    /// Status-category filter: "" (all) | "To Do" | "In Progress" | "Done".
+    /// Deprecated: status filtering moved to the in-table filter. Kept (with a
+    /// serde default) so older saved configs / payloads still deserialize; it is
+    /// always "" now, so the JQL applies no status filter.
+    #[serde(default)]
     pub jira_status_category: String,
     /// Sprint scope: "" (all-time) | "active" (current sprint) | "backlog".
     pub jira_sprint_scope: String,

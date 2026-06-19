@@ -71,7 +71,15 @@
 
           <!-- Ticket table -->
           <section class="card">
-            <div class="card-head"><h2>Tiket</h2></div>
+            <div class="card-head">
+              <h2>Tiket</h2>
+              <div class="ticket-filters">
+                <input type="text" id="ticket-search" class="ticket-search" placeholder="Cari kode / judul…" />
+                <select id="ticket-status-filter" class="ticket-status-filter">
+                  <option value="">Semua status</option>
+                </select>
+              </div>
+            </div>
             <div class="table-wrap">
               <table class="ticket-table">
                 <thead>
@@ -182,15 +190,6 @@
               <option value="backlog">Backlog (belum masuk sprint)</option>
             </select>
             <small class="field-hint">Pilih "Sprint aktif" biar cuma tiket sprint berjalan (mis. Sprint 58) yang muncul.</small>
-          </label>
-          <label>Tampilkan status
-            <select id="cfg-jira_status_category">
-              <option value="">Semua status</option>
-              <option value="In Progress">Lagi dikerjakan (In Progress)</option>
-              <option value="To Do">Belum mulai (To Do)</option>
-              <option value="Done">Selesai (Done)</option>
-            </select>
-            <small class="field-hint">Pilih "In Progress" biar cuma tiket yang lagi kamu kerjain yang muncul.</small>
           </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />

@@ -88,7 +88,6 @@ interface AppConfig {
   jira_story_point_field: string;
   jira_project: string;
   jira_assignee: string;
-  jira_status_category: string;
   jira_sprint_scope: string;
   github_token: string;
   gemma_model: string;
@@ -101,7 +100,6 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_story_point_field",
   "jira_project",
   "jira_assignee",
-  "jira_status_category",
   "jira_sprint_scope",
   "github_token",
   "gemma_model",
@@ -292,6 +290,40 @@ function renderTickets(tickets: TicketRow[]): void {
   });
 }
 
+/** Distinct, sorted Jira statuses present in the ticket set. */
+function distinctStatuses(tickets: TicketRow[]): string[] {
+  return [...new Set(tickets.map((t) => t.status).filter(Boolean))].sort();
+}
+
+/** Fill the in-table status filter from the current tickets, keeping selection. */
+function populateTicketStatusFilter(tickets: TicketRow[]): void {
+  const sel = $("ticket-status-filter") as HTMLSelectElement;
+  const cur = sel.value;
+  const statuses = distinctStatuses(tickets);
+  sel.innerHTML = ['<option value="">Semua status</option>']
+    .concat(statuses.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`))
+    .join("");
+  if (cur && statuses.includes(cur)) sel.value = cur;
+}
+
+/** Re-render the ticket table applying the in-table search + status filter. */
+function refreshTicketTable(): void {
+  if (!dashboard) return;
+  const q = ($("ticket-search") as HTMLInputElement).value.trim().toLowerCase();
+  const status = ($("ticket-status-filter") as HTMLSelectElement).value;
+  const filtered = dashboard.tickets.filter((t) => {
+    const matchQ =
+      !q || t.key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q);
+    const matchS = !status || t.status === status;
+    return matchQ && matchS;
+  });
+  $("ticket-empty").textContent =
+    dashboard.tickets.length > 0
+      ? "Tidak ada tiket yang cocok sama filter."
+      : "Belum ada tiket. Coba Sync dulu.";
+  renderTickets(filtered);
+}
+
 interface TimelineGroup {
   ids: number[];
   app: string;
@@ -338,11 +370,12 @@ function renderTimeline(timeline: TimelineRow[], options: TicketOption[]): void 
   }
 
   const keys = options.map((t) => t.key);
-  const groups = groupTimeline(timeline);
+  // Newest first: groups are built oldest→newest, so reverse for display.
+  const groups = groupTimeline(timeline).reverse();
 
   wrap.innerHTML = groups
     .map((g) => {
-      const opts = ['<option value="">—</option>']
+      const opts = ['<option value="">— belum ditempel —</option>']
         .concat(
           options.map(
             (t) =>
@@ -357,30 +390,30 @@ function renderTimeline(timeline: TimelineRow[], options: TicketOption[]): void 
           ? `<option value="${esc(g.ticket_key)}" selected>${esc(g.ticket_key)}</option>`
           : "";
       const mins = Math.round(g.secs / 60);
-      // No tickets synced yet → nothing to assign; show a disabled hint instead
-      // of an empty, confusing dropdown.
+      const dur = mins > 0 ? `${mins}m` : "<1m";
       const picker =
         keys.length === 0
-          ? `<select class="tl-select" disabled title="Sambungkan Jira dulu untuk menempelkan tiket"><option>tiket?</option></select>`
-          : `<select class="tl-select" data-blocks="${g.ids.join(",")}" title="Tempelkan aktivitas ini ke tiket Jira">${opts}${extra}</select>`;
+          ? `<select class="tl-pick" disabled title="Sambungkan Jira dulu untuk menempelkan tiket"><option>tiket?</option></select>`
+          : `<select class="tl-pick" data-blocks="${g.ids.join(",")}" title="Tempelkan aktivitas ini ke tiket Jira">${opts}${extra}</select>`;
       return `
-        <div class="tl-block${g.is_idle ? " idle" : ""}">
-          <div class="tl-time">${esc(fmtTime(g.start))}–${esc(fmtTime(g.end))}</div>
-          <div class="tl-main">
-            <div class="tl-title">
+        <div class="tl-row${g.is_idle ? " idle" : ""}">
+          <div class="tl-rail"><span class="tl-dot"></span></div>
+          <div class="tl-body">
+            <div class="tl-line1">
               <span class="tl-app">${esc(g.app || "—")}</span>
-              <span class="tl-sep">·</span>
-              <span class="tl-name ellipsis" title="${esc(g.title)}">${esc(g.title || "—")}</span>
-              ${g.is_idle ? '<span class="idle-tag">idle</span>' : ""}
+              <span class="tl-dur${g.is_idle ? " idle" : ""}">${g.is_idle ? "idle" : dur}</span>
             </div>
-            <div class="tl-meta">${mins}m</div>
+            <div class="tl-name ellipsis" title="${esc(g.title)}">${esc(g.title || "—")}</div>
+            <div class="tl-line2">
+              <span class="tl-clock">${esc(fmtTime(g.start))}–${esc(fmtTime(g.end))}</span>
+              ${picker}
+            </div>
           </div>
-          ${picker}
         </div>`;
     })
     .join("");
 
-  wrap.querySelectorAll<HTMLSelectElement>(".tl-select").forEach((sel) => {
+  wrap.querySelectorAll<HTMLSelectElement>(".tl-pick").forEach((sel) => {
     sel.addEventListener("change", () => {
       const ids = (sel.dataset.blocks ?? "").split(",").map(Number).filter((n) => !isNaN(n));
       void onTicketCorrection(ids, sel.value);
@@ -418,7 +451,8 @@ function renderNotes(notes: string): void {
 function render(d: Dashboard): void {
   renderHeader(d.header);
   renderAiSummary(d.ai_summary);
-  renderTickets(d.tickets);
+  populateTicketStatusFilter(d.tickets);
+  refreshTicketTable();
   renderTimeline(d.timeline, d.all_tickets);
   renderPrs(d.prs);
   renderNotes(d.notes);
@@ -873,6 +907,8 @@ function wireEvents(): void {
   $("sync-btn").addEventListener("click", () => void doSync());
   $("refresh-btn").addEventListener("click", () => void doRefresh());
   $("ai-btn").addEventListener("click", () => void generateAi());
+  $("ticket-search").addEventListener("input", () => refreshTicketTable());
+  $("ticket-status-filter").addEventListener("change", () => refreshTicketTable());
   $("note-save").addEventListener("click", () => void saveNote());
   $("note-area").addEventListener("blur", () => void saveNote());
 
