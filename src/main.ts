@@ -44,10 +44,16 @@ interface PrRow {
   updated: string;
 }
 
+interface TicketOption {
+  key: string;
+  summary: string;
+}
+
 interface Dashboard {
   day: string;
   header: DashboardHeader;
   tickets: TicketRow[];
+  all_tickets: TicketOption[];
   timeline: TimelineRow[];
   prs: PrRow[];
   notes: string;
@@ -295,7 +301,7 @@ function groupTimeline(timeline: TimelineRow[]): TimelineGroup[] {
   return groups;
 }
 
-function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
+function renderTimeline(timeline: TimelineRow[], options: TicketOption[]): void {
   const wrap = $("timeline");
   show($("timeline-empty"), timeline.length === 0);
   if (timeline.length === 0) {
@@ -303,18 +309,18 @@ function renderTimeline(timeline: TimelineRow[], tickets: TicketRow[]): void {
     return;
   }
 
-  const keys = tickets.map((t) => t.key);
+  const keys = options.map((t) => t.key);
   const groups = groupTimeline(timeline);
 
   wrap.innerHTML = groups
     .map((g) => {
       const opts = ['<option value="">—</option>']
         .concat(
-          keys.map(
-            (k) =>
-              `<option value="${esc(k)}"${
-                k === g.ticket_key ? " selected" : ""
-              }>${esc(k)}</option>`
+          options.map(
+            (t) =>
+              `<option value="${esc(t.key)}"${
+                t.key === g.ticket_key ? " selected" : ""
+              }>${esc(t.key)}${t.summary ? " — " + esc(t.summary) : ""}</option>`
           )
         )
         .join("");
@@ -385,7 +391,7 @@ function render(d: Dashboard): void {
   renderHeader(d.header);
   renderAiSummary(d.ai_summary);
   renderTickets(d.tickets);
-  renderTimeline(d.timeline, d.tickets);
+  renderTimeline(d.timeline, d.all_tickets);
   renderPrs(d.prs);
   renderNotes(d.notes);
 }

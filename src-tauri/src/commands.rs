@@ -129,10 +129,19 @@ pub struct PrRow {
 }
 
 #[derive(Debug, Serialize)]
+pub struct TicketOption {
+    pub key: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Dashboard {
     pub day: String,
     pub header: DashboardHeader,
     pub tickets: Vec<TicketRow>,
+    /// Every synced Jira ticket (key + summary), for the timeline assignment
+    /// dropdown — independent of whether time has been logged against them.
+    pub all_tickets: Vec<TicketOption>,
     pub timeline: Vec<TimelineRow>,
     pub prs: Vec<PrRow>,
     pub notes: String,
@@ -249,6 +258,23 @@ pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String
         prs.push(r.map_err(|e| e.to_string())?);
     }
 
+    // --- all synced tickets (for the timeline assignment dropdown) ---
+    let mut tstmt = conn
+        .prepare("SELECT key, summary FROM jira_tickets ORDER BY key")
+        .map_err(|e| e.to_string())?;
+    let trows = tstmt
+        .query_map([], |row| {
+            Ok(TicketOption {
+                key: row.get::<_, String>(0)?,
+                summary: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut all_tickets = Vec::new();
+    for r in trows {
+        all_tickets.push(r.map_err(|e| e.to_string())?);
+    }
+
     let notes = db::get_note(conn, day).map_err(map)?.unwrap_or_default();
     let ai_summary = db::get_ai_summary(conn, day, "daily")
         .map_err(map)?
@@ -258,6 +284,7 @@ pub fn build_dashboard(conn: &Connection, day: &str) -> Result<Dashboard, String
         day: day.to_string(),
         header,
         tickets,
+        all_tickets,
         timeline,
         prs,
         notes,
