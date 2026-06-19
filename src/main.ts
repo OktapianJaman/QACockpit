@@ -21,6 +21,14 @@ interface TestCase {
   status: string;
 }
 
+interface PrRef {
+  number: number;
+  repo: string;
+  title: string;
+  state: string;
+  url: string;
+}
+
 interface JiraField {
   id: string;
   name: string;
@@ -87,6 +95,16 @@ function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * Render AI text as minimal, safe HTML: escape first, then turn `**bold**`
+ * into <strong> and preserve line breaks. No other markup is interpreted.
+ */
+function mdToHtml(s: string): string {
+  return esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +507,14 @@ function closeDetail(): void {
   show($("tc-add-form"), false);
 }
 
+/** Switch the detail modal between the "testcases" and "pr" tabs. */
+function selectTab(tab: "testcases" | "pr"): void {
+  for (const t of ["testcases", "pr"] as const) {
+    $(`tab-${t}`).classList.toggle("active", t === tab);
+    show($(`panel-${t}`), t === tab);
+  }
+}
+
 /** Open the detail modal for a ticket: header, summary, status, test cases. */
 async function openDetail(key: string): Promise<void> {
   detailKey = key;
@@ -502,6 +528,11 @@ async function openDetail(key: string): Promise<void> {
   $("tc-list").innerHTML = "";
   show($("tc-empty"), false);
   $("tc-counter").textContent = "";
+  // Reset the PR tab to its empty state and default back to Test Cases.
+  $("pr-list").innerHTML = "";
+  show($("pr-empty"), true);
+  $("pr-empty").textContent = "Belum dicari. Klik Cari PR.";
+  selectTab("testcases");
   show($("detail-overlay"), true);
   await loadTestCases(key);
 }
@@ -632,6 +663,104 @@ async function generateTestCases(): Promise<void> {
     toast("Test case dibuat oleh AI.");
   } catch (e) {
     toast(`Gagal generate: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PR tab (find a ticket's PRs + on-demand AI review)
+// ---------------------------------------------------------------------------
+
+/** CSS class for a PR state chip. */
+function prStateClass(state: string): string {
+  const s = state.toLowerCase();
+  if (s === "open") return "pr-state open";
+  if (s === "closed") return "pr-state closed";
+  return "pr-state";
+}
+
+/** Render the searched PRs, each with a "summarize" button. */
+function renderPrs(prs: PrRef[]): void {
+  const list = $("pr-list");
+  list.innerHTML = "";
+
+  if (prs.length === 0) {
+    show($("pr-empty"), true);
+    $("pr-empty").textContent = detailKey
+      ? `Nggak nemu PR yang nyebut ${detailKey} di GitHub.`
+      : "Nggak nemu PR.";
+    return;
+  }
+  show($("pr-empty"), false);
+
+  for (const pr of prs) {
+    const item = document.createElement("div");
+    item.className = "pr-item";
+    item.innerHTML = `
+      <div class="pr-item-head">
+        <span class="pr-ref mono">#${pr.number} · ${esc(pr.repo)}</span>
+        <span class="${prStateClass(pr.state)}">${esc(pr.state)}</span>
+      </div>
+      <span class="pr-title">${esc(pr.title)}</span>
+      <button class="btn small primary pr-summarize" type="button">✨ Ringkas + apa yang dites</button>
+      <div class="pr-review hidden"></div>`;
+
+    const btn = item.querySelector<HTMLButtonElement>(".pr-summarize");
+    const panel = item.querySelector<HTMLDivElement>(".pr-review");
+    btn?.addEventListener("click", () => void summarizePr(pr, btn, panel!));
+
+    list.appendChild(item);
+  }
+}
+
+/** "🔍 Cari PR": search GitHub for PRs that mention the ticket key. */
+async function searchPrs(): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const btn = $<HTMLButtonElement>("pr-search");
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi cari PR…";
+  try {
+    const prs = await invoke<PrRef[]>("list_ticket_prs", { key });
+    if (detailKey === key) renderPrs(prs);
+  } catch (e) {
+    toast(errStr(e), "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+/** Fetch a PR's diff and render the local-model summary / what-to-test. */
+async function summarizePr(
+  pr: PrRef,
+  btn: HTMLButtonElement,
+  panel: HTMLDivElement
+): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const summary = ticketByKey(key)?.summary || "";
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Lagi baca PR…";
+  panel.classList.remove("hidden");
+  panel.classList.add("loading");
+  panel.textContent = "Lagi baca PR & nyusun… (model lokal, agak lama)";
+  try {
+    const review = await invoke<string>("summarize_pr", {
+      key,
+      summary,
+      repo: pr.repo,
+      number: pr.number,
+    });
+    panel.classList.remove("loading");
+    panel.innerHTML = mdToHtml(review);
+  } catch (e) {
+    panel.classList.add("hidden");
+    toast(errStr(e), "error");
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
@@ -885,6 +1014,9 @@ function wireEvents(): void {
     const key = detailKey;
     if (key) void shiftStatus(key);
   });
+  $("tab-testcases").addEventListener("click", () => selectTab("testcases"));
+  $("tab-pr").addEventListener("click", () => selectTab("pr"));
+  $("pr-search").addEventListener("click", () => void searchPrs());
   $("tc-generate").addEventListener("click", () => void generateTestCases());
   $("tc-add-toggle").addEventListener("click", () => {
     const form = $("tc-add-form");

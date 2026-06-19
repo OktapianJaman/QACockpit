@@ -45,28 +45,45 @@
           <button id="detail-shift" class="btn small">Geser status</button>
         </div>
 
-        <div class="tc-section">
-          <div class="tc-head">
-            <h2>Test Cases</h2>
-            <span id="tc-counter" class="tc-counter"></span>
-          </div>
-          <div class="tc-actions">
-            <button id="tc-generate" class="btn small primary">✨ Generate pakai AI</button>
-            <button id="tc-add-toggle" class="btn small">+ Tambah manual</button>
-          </div>
+        <div class="detail-tabs">
+          <button id="tab-testcases" class="detail-tab active" data-tab="testcases">Test Cases</button>
+          <button id="tab-pr" class="detail-tab" data-tab="pr">PR</button>
+        </div>
 
-          <form id="tc-add-form" class="tc-add-form hidden">
-            <input type="text" id="tc-title" placeholder="Judul test case (wajib)" />
-            <input type="text" id="tc-steps" placeholder="Langkah (opsional)" />
-            <input type="text" id="tc-expected" placeholder="Hasil yang diharapkan (opsional)" />
-            <div class="tc-add-actions">
-              <button type="button" id="tc-add-cancel" class="btn small">Batal</button>
-              <button type="submit" class="btn small primary">Simpan</button>
+        <div id="panel-testcases" class="tab-panel">
+          <div class="tc-section">
+            <div class="tc-head">
+              <h2>Test Cases</h2>
+              <span id="tc-counter" class="tc-counter"></span>
             </div>
-          </form>
+            <div class="tc-actions">
+              <button id="tc-generate" class="btn small primary">✨ Generate pakai AI</button>
+              <button id="tc-add-toggle" class="btn small">+ Tambah manual</button>
+            </div>
 
-          <div id="tc-list" class="tc-list"></div>
-          <div id="tc-empty" class="tc-empty hidden">Belum ada test case. Generate pakai AI atau tambah manual.</div>
+            <form id="tc-add-form" class="tc-add-form hidden">
+              <input type="text" id="tc-title" placeholder="Judul test case (wajib)" />
+              <input type="text" id="tc-steps" placeholder="Langkah (opsional)" />
+              <input type="text" id="tc-expected" placeholder="Hasil yang diharapkan (opsional)" />
+              <div class="tc-add-actions">
+                <button type="button" id="tc-add-cancel" class="btn small">Batal</button>
+                <button type="submit" class="btn small primary">Simpan</button>
+              </div>
+            </form>
+
+            <div id="tc-list" class="tc-list"></div>
+            <div id="tc-empty" class="tc-empty hidden">Belum ada test case. Generate pakai AI atau tambah manual.</div>
+          </div>
+        </div>
+
+        <div id="panel-pr" class="tab-panel hidden">
+          <div class="pr-section">
+            <div class="pr-actions">
+              <button id="pr-search" class="btn small primary">🔍 Cari PR</button>
+            </div>
+            <div id="pr-list" class="pr-list"></div>
+            <div id="pr-empty" class="pr-empty">Belum dicari. Klik Cari PR.</div>
+          </div>
         </div>
       </div>
     </div>
