@@ -418,9 +418,137 @@ pub fn fetch_my_issues(
     parse_issues(&body, story_point_field)
 }
 
+// ---------------------------------------------------------------------------
+// Posting QA test results back to Jira as a comment (ADF table)
+// ---------------------------------------------------------------------------
+
+/// Build an Atlassian Document Format (ADF) comment body for QA test results:
+/// a level-3 heading, a summary paragraph, then a table whose first row is a
+/// header (No / Test Case / Hasil) followed by one body row per `rows` entry
+/// (`(title, result_label)`). Each cell's text is wrapped in a paragraph node.
+pub fn build_results_adf(summary_line: &str, rows: &[(String, String)]) -> Value {
+    // A paragraph node wrapping a single text run.
+    let para = |text: &str| {
+        serde_json::json!({
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": text }]
+        })
+    };
+    let header_cell = |text: &str| {
+        serde_json::json!({
+            "type": "tableHeader",
+            "attrs": {},
+            "content": [para(text)]
+        })
+    };
+    let body_cell = |text: &str| {
+        serde_json::json!({
+            "type": "tableCell",
+            "attrs": {},
+            "content": [para(text)]
+        })
+    };
+
+    let mut table_rows: Vec<Value> = Vec::with_capacity(rows.len() + 1);
+    table_rows.push(serde_json::json!({
+        "type": "tableRow",
+        "content": [header_cell("No"), header_cell("Test Case"), header_cell("Hasil")]
+    }));
+    for (i, (title, result)) in rows.iter().enumerate() {
+        table_rows.push(serde_json::json!({
+            "type": "tableRow",
+            "content": [
+                body_cell(&(i + 1).to_string()),
+                body_cell(title),
+                body_cell(result),
+            ]
+        }));
+    }
+
+    serde_json::json!({
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "heading",
+                "attrs": { "level": 3 },
+                "content": [{ "type": "text", "text": "🧪 Hasil Test QA" }]
+            },
+            para(summary_line),
+            { "type": "table", "content": table_rows }
+        ]
+    })
+}
+
+/// Add a comment to a Jira issue (a WRITE to Jira). `body_adf` is the ADF doc
+/// node. Thin HTTP wrapper; not unit-tested.
+pub fn add_comment(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    key: &str,
+    body_adf: &Value,
+) -> Result<()> {
+    let url = format!(
+        "{}/rest/api/3/issue/{}/comment",
+        base_url.trim_end_matches('/'),
+        key
+    );
+    let body = serde_json::json!({ "body": body_adf });
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_results_adf_has_heading_summary_and_table() {
+        let rows = vec![
+            ("Login valid".to_string(), "✅ Pass".to_string()),
+            ("Login invalid".to_string(), "❌ Fail".to_string()),
+        ];
+        let doc = build_results_adf("2 test case · 1 ✅ · 1 ❌", &rows);
+
+        assert_eq!(doc["type"], "doc");
+        let content = doc["content"].as_array().unwrap();
+        // heading + summary paragraph + table.
+        assert_eq!(content[0]["type"], "heading");
+
+        // Find the table node.
+        let table = content
+            .iter()
+            .find(|n| n["type"] == "table")
+            .expect("table node present");
+        let trows = table["content"].as_array().unwrap();
+        // 1 header row + 2 body rows.
+        assert_eq!(trows.len(), 3);
+
+        // Header row has 3 header cells.
+        let header = trows[0]["content"].as_array().unwrap();
+        assert_eq!(header.len(), 3);
+        assert_eq!(header[0]["type"], "tableHeader");
+
+        // A body cell's text matches (row 1, second cell = title).
+        assert_eq!(
+            trows[1]["content"][1]["content"][0]["content"][0]["text"],
+            "Login valid"
+        );
+        // Result cell carries the emoji label.
+        assert_eq!(
+            trows[2]["content"][2]["content"][0]["content"][0]["text"],
+            "❌ Fail"
+        );
+    }
 
     // --- fields fixture: GET /rest/api/3/field returns a JSON array ---
     const FIELDS_FIXTURE: &str = r#"[

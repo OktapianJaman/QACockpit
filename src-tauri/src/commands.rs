@@ -804,6 +804,91 @@ pub fn generate_test_cases(
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
 }
 
+/// Fetch a PR's diff, ask the local model to draft test cases FROM the code
+/// change, persist each, and return the freshly-listed cases for the ticket.
+#[tauri::command]
+pub fn generate_test_cases_from_pr(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    summary: String,
+    repo: String,
+    number: i64,
+) -> Result<Vec<db::TestCase>, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    if cfg.github_token.is_empty() {
+        return Err("Isi GitHub Token di Settings dulu".into());
+    }
+    let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
+        .map_err(|e| e.to_string())?;
+    let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
+        &cfg.gemma_model,
+        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &diff),
+    ));
+    if cases.is_empty() {
+        return Err("AI nggak menghasilkan test case dari PR ini — coba lagi atau cek LM Studio".into());
+    }
+    for (title, steps, expected) in &cases {
+        db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
+    }
+    db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+}
+
+/// Send the ticket's test results to Jira as a comment with an ADF table.
+/// Returns the summary line so the UI can toast it.
+#[tauri::command]
+pub fn post_test_results(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<String, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+
+    let cases = db::list_test_cases(&conn, &key).map_err(|e| e.to_string())?;
+    if cases.is_empty() {
+        return Err("Belum ada test case buat dikirim".into());
+    }
+
+    let mut rows: Vec<(String, String)> = Vec::with_capacity(cases.len());
+    let (mut p, mut f, mut u) = (0usize, 0usize, 0usize);
+    for c in &cases {
+        let label = match c.status.as_str() {
+            "passed" => {
+                p += 1;
+                "✅ Pass"
+            }
+            "failed" => {
+                f += 1;
+                "❌ Fail"
+            }
+            _ => {
+                u += 1;
+                "⬜ Untested"
+            }
+        };
+        rows.push((c.title.clone(), label.to_string()));
+    }
+    let summary_line = format!(
+        "{} test case · {} ✅ Passed · {} ❌ Failed · {} ⬜ Untested",
+        cases.len(),
+        p,
+        f,
+        u
+    );
+
+    let adf = integrations::jira::build_results_adf(&summary_line, &rows);
+    integrations::jira::add_comment(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        &key,
+        &adf,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(summary_line)
+}
+
 // ---------------------------------------------------------------------------
 // PR tab (on-demand: find a ticket's PR(s) + AI review of the diff)
 // ---------------------------------------------------------------------------

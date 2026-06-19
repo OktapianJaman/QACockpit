@@ -272,6 +272,52 @@ pub fn review_pr(model: &str, key: &str, summary: &str, diff: &str) -> String {
     complete(model, &pr_review_prompt(key, summary, diff))
 }
 
+/// Build an Indonesian prompt asking Gemma, as a QA assistant, to DRAFT test
+/// cases from a PR diff. The Jira ticket is often empty, so the test cases must
+/// be based on the actual code change (the diff). Uses the SAME strict
+/// one-per-line pipe format as [`test_cases_prompt`]:
+/// `Judul | Langkah | Hasil yang diharapkan`. The diff is truncated to
+/// [`MAX_DIFF_CHARS`]; when cut a "(diff dipotong)" note is appended.
+pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str) -> String {
+    let (diff_text, truncated) = if diff.chars().count() > MAX_DIFF_CHARS {
+        let cut: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+        (cut, true)
+    } else {
+        (diff.to_string(), false)
+    };
+    let note = if truncated { "\n(diff dipotong)" } else { "" };
+
+    format!(
+        "Kamu adalah asisten QA. Buatkan test case berdasarkan PERUBAHAN KODE \
+         (diff Pull Request) di bawah ini. Tiket Jira sering kosong, jadi dasarkan \
+         test case pada perubahan kode yang sebenarnya, bukan cuma ringkasan tiket.\n\n\
+         Tiket: {key}\n\
+         Ringkasan: {summary}\n\n\
+         Diff PR:\n\
+         ```diff\n{diff_text}{note}\n```\n\n\
+         ATURAN OUTPUT (wajib diikuti):\n\
+         - Buat 3 sampai 8 test case.\n\
+         - Satu test case per baris.\n\
+         - Format tiap baris PERSIS: Judul | Langkah | Hasil yang diharapkan\n\
+         - Pakai tanda pipa (|) sebagai pemisah ketiga bagian.\n\
+         - JANGAN pakai penomoran, bullet, atau teks tambahan apa pun.\n\
+         - Tulis dalam bahasa Indonesia.\n\n\
+         Contoh:\n\
+         Validasi input kosong | Kirim form tanpa isi field wajib | Muncul pesan error validasi\n\n\
+         Sekarang tulis test case-nya:"
+    )
+}
+
+/// Convenience: ask the local model to draft test cases from a PR diff.
+pub fn generate_test_cases_from_diff(
+    model: &str,
+    key: &str,
+    summary: &str,
+    diff: &str,
+) -> Vec<(String, String, String)> {
+    parse_test_cases(&complete(model, &test_cases_from_diff_prompt(key, summary, diff)))
+}
+
 /// POST a prompt to LM Studio and return the model's reply.
 ///
 /// Degrades gracefully: any failure (LM Studio down, timeout, bad payload)
@@ -449,6 +495,26 @@ Cuma judul tanpa pipa
         assert!(p.contains("retry()"));
         // Indonesian instruction word.
         assert!(p.contains("dites") || p.contains("Ringkasan"));
+    }
+
+    #[test]
+    fn test_cases_from_diff_prompt_contains_key_facts() {
+        let diff = "diff --git a/login.ts b/login.ts\n+const x = retry();";
+        let p = test_cases_from_diff_prompt("QAT-7", "Login bug di halaman utama", diff);
+        assert!(p.contains("QAT-7"));
+        // Part of the diff is embedded.
+        assert!(p.contains("retry()"));
+        // Instruction word + the pipe format.
+        assert!(p.contains("test case"));
+        assert!(p.contains("Judul | Langkah | Hasil"));
+    }
+
+    #[test]
+    fn test_cases_from_diff_prompt_truncates_long_diff() {
+        let diff = "x".repeat(MAX_DIFF_CHARS + 500);
+        let p = test_cases_from_diff_prompt("QAT-1", "summary", &diff);
+        assert!(p.contains("(diff dipotong)"));
+        assert!(!p.contains(&"x".repeat(MAX_DIFF_CHARS + 1)));
     }
 
     #[test]
