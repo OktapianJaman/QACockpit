@@ -92,6 +92,27 @@ fn ai_target(cfg: &AppConfig) -> crate::ai::gemma::AiTarget {
     crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), crate::ai::gemma::GEMINI_MODEL)
 }
 
+/// Run a DB-using command body on a blocking thread, off the async runtime.
+///
+/// Command bodies call `reqwest::blocking`, whose internal tokio runtime panics
+/// ("Cannot drop a runtime in a context where blocking is not allowed") if used
+/// directly inside a Tauri async worker. `spawn_blocking` moves the work to a
+/// blocking-pool thread where blocking is allowed, keeping the UI responsive.
+/// A fresh `Connection` is opened on that thread and handed to `f`.
+async fn with_conn<T, F>(state: &tauri::State<'_, AppState>, f: F) -> Result<T, String>
+where
+    F: FnOnce(Connection) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        f(conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     let set = |k: &str, v: &str| db::set_config(conn, k, v).map_err(|e| e.to_string());
     set("jira_base_url", &cfg.jira_base_url)?;
@@ -474,36 +495,45 @@ pub fn set_config(state: tauri::State<'_, AppState>, cfg: AppConfig) -> Result<(
 /// the form first, so this reads the just-saved config.
 #[tauri::command]
 pub async fn test_jira_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let cfg = load_config(&state.conn()?)?;
-    require_jira_creds(&cfg)?;
-    let name = integrations::jira::fetch_myself(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
-        .map_err(|e| format!("Gagal konek Jira: {e}"))?;
-    Ok(format!("Terhubung sebagai {name}"))
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        require_jira_creds(&cfg)?;
+        let name = integrations::jira::fetch_myself(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+            .map_err(|e| format!("Gagal konek Jira: {e}"))?;
+        Ok(format!("Terhubung sebagai {name}"))
+    })
+    .await
 }
 
 /// Test the GitHub token; returns the authenticated login.
 #[tauri::command]
 pub async fn test_github_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let cfg = load_config(&state.conn()?)?;
-    if cfg.github_token.trim().is_empty() {
-        return Err("Isi GitHub Token dulu".into());
-    }
-    let login = integrations::github::fetch_user(&cfg.github_token)
-        .map_err(|e| format!("Gagal konek GitHub: {e}"))?;
-    Ok(format!("Terhubung sebagai @{login}"))
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        if cfg.github_token.trim().is_empty() {
+            return Err("Isi GitHub Token dulu".into());
+        }
+        let login = integrations::github::fetch_user(&cfg.github_token)
+            .map_err(|e| format!("Gagal konek GitHub: {e}"))?;
+        Ok(format!("Terhubung sebagai @{login}"))
+    })
+    .await
 }
 
 /// Test the Gemini API key with a minimal request.
 #[tauri::command]
 pub async fn test_gemini_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let cfg = load_config(&state.conn()?)?;
-    crate::ai::gemma::test_connection(&ai_target(&cfg))?;
-    Ok(format!("Gemini OK ({})", crate::ai::gemma::GEMINI_MODEL))
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        crate::ai::gemma::test_connection(&ai_target(&cfg))?;
+        Ok(format!("Gemini OK ({})", crate::ai::gemma::GEMINI_MODEL))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
     if cfg.jira_base_url.is_empty() || cfg.jira_email.is_empty() || cfg.jira_token.is_empty() {
@@ -539,6 +569,8 @@ pub async fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, S
         tickets: tickets.len(),
         prs: prs.len(),
     })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -574,7 +606,7 @@ pub async fn generate_ai_summary(
     state: tauri::State<'_, AppState>,
     day: String,
 ) -> Result<String, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
     let blocks = db::list_blocks_for_day(&conn, &day).map_err(|e| e.to_string())?;
@@ -596,6 +628,8 @@ pub async fn generate_ai_summary(
     let summary = crate::ai::gemma::daily_summary(&ai_target(&cfg), &blocks, &tickets);
     db::set_ai_summary(&conn, &day, "daily", &summary).map_err(|e| e.to_string())?;
     Ok(summary)
+    })
+    .await
 }
 
 /// Read the cached daily summary for `day` (empty string when none yet).
@@ -637,22 +671,26 @@ fn require_jira_creds(cfg: &AppConfig) -> Result<(), String> {
 pub async fn list_jira_fields(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<integrations::jira::JiraField>, String> {
-    let conn = state.conn()?;
-    let cfg = load_config(&conn)?;
-    require_jira_creds(&cfg)?;
-    integrations::jira::fetch_fields(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
-        .map_err(|e| e.to_string())
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        require_jira_creds(&cfg)?;
+        integrations::jira::fetch_fields(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn list_jira_projects(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<integrations::jira::JiraProject>, String> {
-    let conn = state.conn()?;
-    let cfg = load_config(&conn)?;
-    require_jira_creds(&cfg)?;
-    integrations::jira::fetch_projects(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
-        .map_err(|e| e.to_string())
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        require_jira_creds(&cfg)?;
+        integrations::jira::fetch_projects(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -660,7 +698,7 @@ pub async fn list_jira_assignees(
     state: tauri::State<'_, AppState>,
     project: String,
 ) -> Result<Vec<integrations::jira::JiraUser>, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
     // Fall back to the saved project when the caller passes an empty one.
@@ -676,6 +714,8 @@ pub async fn list_jira_assignees(
         &project,
     )
     .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// List the workflow transitions available for a Jira issue (e.g. To Do →
@@ -685,7 +725,7 @@ pub async fn list_transitions(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<Vec<integrations::jira::JiraTransition>, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
     integrations::jira::fetch_transitions(
@@ -695,6 +735,8 @@ pub async fn list_transitions(
         &key,
     )
     .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Move a Jira issue to a new status via `transition_id`. This is a WRITE to
@@ -707,7 +749,7 @@ pub async fn transition_issue(
     transition_id: String,
     to_status: String,
 ) -> Result<(), String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
     integrations::jira::do_transition(
@@ -728,6 +770,8 @@ pub async fn transition_issue(
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+    })
+    .await
 }
 
 /// A ticket card for the Kanban board.
@@ -770,7 +814,7 @@ pub async fn set_story_points(
     key: String,
     points: Option<f64>,
 ) -> Result<(), String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
     integrations::jira::update_story_points(
@@ -789,6 +833,8 @@ pub async fn set_story_points(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -865,17 +911,19 @@ pub async fn generate_test_cases(
     key: String,
     summary: String,
 ) -> Result<Vec<db::TestCase>, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
     let drafted = crate::ai::gemma::generate_test_cases(&ai_target(&cfg), &key, &summary);
     if drafted.is_empty() {
-        return Err("AI nggak menghasilkan test case — coba lagi atau cek LM Studio".into());
+        return Err("AI nggak menghasilkan test case — coba lagi atau cek API key Gemini".into());
     }
     for (title, steps, expected) in &drafted {
         db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
     }
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Fetch a PR's diff, ask the local model to draft test cases FROM the code
@@ -888,7 +936,7 @@ pub async fn generate_test_cases_from_pr(
     repo: String,
     number: i64,
 ) -> Result<Vec<db::TestCase>, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     if cfg.github_token.is_empty() {
         return Err("Isi GitHub Token di Settings dulu".into());
@@ -900,12 +948,14 @@ pub async fn generate_test_cases_from_pr(
         &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &diff),
     ));
     if cases.is_empty() {
-        return Err("AI nggak menghasilkan test case dari PR ini — coba lagi atau cek LM Studio".into());
+        return Err("AI nggak menghasilkan test case dari PR ini — coba lagi atau cek API key Gemini".into());
     }
     for (title, steps, expected) in &cases {
         db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
     }
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// One PR to combine when generating test cases across repos.
@@ -925,7 +975,7 @@ pub async fn generate_test_cases_from_prs(
     summary: String,
     prs: Vec<PrInput>,
 ) -> Result<Vec<db::TestCase>, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     if cfg.github_token.is_empty() {
         return Err("Isi GitHub Token di Settings dulu".into());
@@ -944,12 +994,14 @@ pub async fn generate_test_cases_from_prs(
         &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &combined),
     ));
     if cases.is_empty() {
-        return Err("AI nggak menghasilkan test case dari PR-PR ini — coba lagi atau cek LM Studio".into());
+        return Err("AI nggak menghasilkan test case dari PR-PR ini — coba lagi atau cek API key Gemini".into());
     }
     for (title, steps, expected) in &cases {
         db::add_test_case(&conn, &key, title, steps, expected).map_err(|e| e.to_string())?;
     }
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// A generated bug report: an editable title + body, plus the raw model output.
@@ -971,7 +1023,7 @@ pub async fn generate_bug_report(
     language: String,
     sections: Vec<String>,
 ) -> Result<BugReport, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
     if text.trim().is_empty() && image_base64.is_none() {
@@ -992,9 +1044,11 @@ pub async fn generate_bug_report(
         &sections,
     );
     if body.trim().is_empty() {
-        return Err("AI nggak menghasilkan bug report — coba lagi atau cek API key / LM Studio".into());
+        return Err("AI nggak menghasilkan bug report — coba lagi atau cek API key Gemini".into());
     }
     Ok(BugReport { title, body, raw })
+    })
+    .await
 }
 
 /// Create a Bug issue in Jira from a (reviewed) report and optionally attach the
@@ -1009,7 +1063,7 @@ pub async fn create_jira_bug(
     assignee_id: Option<String>,
     image_base64: Option<String>,
 ) -> Result<integrations::jira::CreatedIssue, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
 
@@ -1060,6 +1114,8 @@ pub async fn create_jira_bug(
     }
 
     Ok(created)
+    })
+    .await
 }
 
 /// Send the ticket's test results to Jira as a comment with an ADF table.
@@ -1069,7 +1125,7 @@ pub async fn post_test_results(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<String, String> {
-    let conn = state.conn()?;
+    with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
 
@@ -1130,6 +1186,8 @@ pub async fn post_test_results(
     )
     .map_err(|e| e.to_string())?;
     Ok(panel_text)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,19 +1198,21 @@ const GITHUB_TOKEN_MISSING: &str = "Isi GitHub Token di Settings dulu buat fitur
 
 /// Search GitHub for PRs that mention a ticket key.
 #[tauri::command]
-pub fn list_ticket_prs(
+pub async fn list_ticket_prs(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<Vec<integrations::github::PrRef>, String> {
-    let conn = state.conn()?;
-    let cfg = load_config(&conn)?;
-    if cfg.github_token.is_empty() {
-        return Err(GITHUB_TOKEN_MISSING.into());
-    }
-    integrations::github::search_prs_for_key(&cfg.github_token, &key).map_err(|e| e.to_string())
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        if cfg.github_token.is_empty() {
+            return Err(GITHUB_TOKEN_MISSING.into());
+        }
+        integrations::github::search_prs_for_key(&cfg.github_token, &key).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-/// Fetch a PR's diff and ask the local model to summarize it + "what to test".
+/// Fetch a PR's diff and ask the model to summarize it + "what to test".
 #[tauri::command]
 pub async fn summarize_pr(
     state: tauri::State<'_, AppState>,
@@ -1161,14 +1221,16 @@ pub async fn summarize_pr(
     repo: String,
     number: i64,
 ) -> Result<String, String> {
-    let conn = state.conn()?;
-    let cfg = load_config(&conn)?;
-    if cfg.github_token.is_empty() {
-        return Err(GITHUB_TOKEN_MISSING.into());
-    }
-    let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
-        .map_err(|e| e.to_string())?;
-    Ok(crate::ai::gemma::review_pr(&ai_target(&cfg), &key, &summary, &diff))
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        if cfg.github_token.is_empty() {
+            return Err(GITHUB_TOKEN_MISSING.into());
+        }
+        let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
+            .map_err(|e| e.to_string())?;
+        Ok(crate::ai::gemma::review_pr(&ai_target(&cfg), &key, &summary, &diff))
+    })
+    .await
 }
 
 #[cfg(test)]

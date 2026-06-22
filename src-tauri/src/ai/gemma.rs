@@ -317,13 +317,7 @@ pub fn complete(target: &AiTarget, prompt: &str) -> String {
 /// Shared by [`complete`] (text) and [`generate_bug_report`] (multimodal); same
 /// graceful-degrade contract — any failure returns [`AI_UNAVAILABLE`].
 fn post_chat(target: &AiTarget, body: Value) -> String {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return AI_UNAVAILABLE.to_string(),
-    };
+    let client = crate::net::client();
 
     let mut req = client.post(&target.url).json(&body);
     if let Some(key) = &target.api_key {
@@ -353,10 +347,7 @@ pub fn test_connection(target: &AiTarget) -> Result<(), String> {
     if target.api_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err("API key Gemini belum diisi".into());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::net::client();
     let mut req = client.post(&target.url).json(&build_chat_request(&target.model, "ping"));
     if let Some(key) = &target.api_key {
         req = req.bearer_auth(key);
@@ -690,6 +681,22 @@ Cuma judul tanpa pipa
         assert!(p.contains("(diff dipotong)"));
         // The embedded diff body is capped (prompt is prefix + capped diff + suffix).
         assert!(!p.contains(&"x".repeat(MAX_DIFF_CHARS + 1)));
+    }
+
+    #[test]
+    fn blocking_http_from_async_context_does_not_panic() {
+        // Regression: blocking HTTP issued DIRECTLY inside the Tauri async runtime
+        // panics ("Cannot drop a runtime in a context where blocking is not
+        // allowed"), which left the spinner stuck forever. The fix is to run the
+        // blocking work via spawn_blocking (a blocking-pool thread where blocking
+        // IS allowed). This mirrors how the async commands now call their bodies.
+        let mut target = AiTarget::gemini("dummy-key", "model");
+        target.url = "http://127.0.0.1:9/".to_string(); // nothing listening → fast refuse
+        let res = tauri::async_runtime::block_on(async move {
+            tauri::async_runtime::spawn_blocking(move || test_connection(&target)).await
+        });
+        // No panic; the inner call returns Err (connection refused).
+        assert!(res.expect("join ok").is_err());
     }
 
     #[test]

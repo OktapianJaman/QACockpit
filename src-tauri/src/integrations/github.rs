@@ -133,7 +133,7 @@ pub fn parse_pr_search(json: &str) -> Result<Vec<PrRef>> {
 /// Search GitHub for PRs that mention a ticket key (e.g. branch/title/body).
 /// Thin HTTP wrapper around `parse_pr_search`; not unit-tested.
 pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get("https://api.github.com/search/issues")
         .header("Authorization", format!("Bearer {}", token))
@@ -152,7 +152,7 @@ pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
 /// Fetch the raw unified diff for a PR (`repo` = "OWNER/REPO").
 /// Thin HTTP wrapper; not unit-tested.
 pub fn fetch_pr_diff(token: &str, repo: &str, number: i64) -> Result<String> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let diff = client
         .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
         .header("Authorization", format!("Bearer {}", token))
@@ -167,7 +167,7 @@ pub fn fetch_pr_diff(token: &str, repo: &str, number: i64) -> Result<String> {
 /// Fetch PRs authored by the authenticated user.
 /// Thin HTTP wrapper around `parse_prs`; not unit-tested.
 pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get("https://api.github.com/search/issues")
         .header("Authorization", format!("Bearer {}", token))
@@ -183,7 +183,7 @@ pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
 /// Verify a GitHub token by fetching the authenticated user; returns the login.
 /// Thin HTTP wrapper; not unit-tested.
 pub fn fetch_user(token: &str) -> Result<String> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {}", token))

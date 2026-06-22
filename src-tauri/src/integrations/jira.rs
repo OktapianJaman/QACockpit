@@ -131,7 +131,7 @@ pub fn parse_fields(json: &str) -> Result<Vec<JiraField>> {
 /// Fetch all Jira fields. Thin HTTP wrapper around `parse_fields`; not unit-tested.
 pub fn fetch_fields(base_url: &str, email: &str, token: &str) -> Result<Vec<JiraField>> {
     let url = format!("{}/rest/api/3/field", base_url.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -181,7 +181,7 @@ pub fn fetch_projects(base_url: &str, email: &str, token: &str) -> Result<Vec<Ji
         "{}/rest/api/3/project/search",
         base_url.trim_end_matches('/')
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -242,7 +242,7 @@ pub fn fetch_assignees(
         "{}/rest/api/3/user/assignable/search",
         base_url.trim_end_matches('/')
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -318,7 +318,7 @@ pub fn fetch_transitions(
         base_url.trim_end_matches('/'),
         issue_key
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -344,7 +344,7 @@ pub fn do_transition(
         issue_key
     );
     let body = serde_json::json!({ "transition": { "id": transition_id } });
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     client
         .post(url)
         .basic_auth(email, Some(token))
@@ -375,7 +375,7 @@ pub fn update_story_points(
         None => serde_json::Value::Null,
     };
     let body = serde_json::json!({ "fields": { field: value } });
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     client
         .put(url)
         .basic_auth(email, Some(token))
@@ -402,7 +402,7 @@ pub fn fetch_my_issues(
     // response still has an `issues[]` array, so `parse_issues` is unchanged.
     let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
     let jql = build_jql(project, assignee, status_category, sprint_scope);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -636,7 +636,7 @@ pub fn find_issue_type(
         base_url.trim_end_matches('/'),
         project_key
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -680,7 +680,7 @@ pub fn create_issue(
         priority,
         assignee_account_id,
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let resp = client
         .post(url)
         .basic_auth(email, Some(token))
@@ -729,7 +729,7 @@ pub fn upload_attachment(
         base_url.trim_end_matches('/'),
         issue_key
     );
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     client
         .post(url)
         .basic_auth(email, Some(token))
@@ -745,7 +745,7 @@ pub fn upload_attachment(
 /// name. Thin HTTP wrapper; not unit-tested.
 pub fn fetch_myself(base_url: &str, email: &str, token: &str) -> Result<String> {
     let url = format!("{}/rest/api/3/myself", base_url.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     let body = client
         .get(url)
         .basic_auth(email, Some(token))
@@ -775,7 +775,7 @@ pub fn add_comment(
         key
     );
     let body = serde_json::json!({ "body": body_adf });
-    let client = reqwest::blocking::Client::new();
+    let client = crate::net::client();
     client
         .post(url)
         .basic_auth(email, Some(token))

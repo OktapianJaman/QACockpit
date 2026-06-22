@@ -3,6 +3,7 @@ mod commands;
 mod core;
 mod db;
 mod integrations;
+mod net;
 mod recorder;
 
 use commands::AppState;
@@ -37,6 +38,10 @@ pub fn run() {
     if let Err(e) = db::open(&db_path) {
         eprintln!("failed to initialize database at {db_path}: {e}");
     }
+
+    // Build the shared HTTP client eagerly on the main thread, so its internal
+    // runtime is never created/dropped from within a Tauri async worker.
+    let _ = net::client();
 
     let state = AppState {
         recorder: Recorder::new(db_path.clone()),
