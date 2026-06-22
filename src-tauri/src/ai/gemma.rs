@@ -360,8 +360,13 @@ pub fn generate_test_cases_from_diff(
 /// (provider down, timeout, bad payload) returns [`AI_UNAVAILABLE`] instead of
 /// erroring or panicking.
 pub fn complete(target: &AiTarget, prompt: &str) -> String {
-    let body = build_chat_request(&target.model, prompt);
+    post_chat(target, build_chat_request(&target.model, prompt))
+}
 
+/// POST a pre-built OpenAI-compatible body to `target` and return the reply.
+/// Shared by [`complete`] (text) and [`generate_bug_report`] (multimodal); same
+/// graceful-degrade contract — any failure returns [`AI_UNAVAILABLE`].
+fn post_chat(target: &AiTarget, body: Value) -> String {
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -391,6 +396,29 @@ pub fn complete(target: &AiTarget, prompt: &str) -> String {
     }
 }
 
+/// Convenience: generate a structured bug report from free-form text and an
+/// optional screenshot (bare base64 or `data:` URL). Returns `(title, body, raw)`.
+/// Thin HTTP wrapper around the tested [`build_bug_prompt`] / [`build_vision_request`]
+/// / [`parse_title_and_body`]; not unit-tested.
+pub fn generate_bug_report(
+    target: &AiTarget,
+    text: &str,
+    image_base64: Option<&str>,
+    language: &str,
+    sections: &[String],
+) -> (String, String, String) {
+    let system = build_bug_prompt(language, sections);
+    let user = if text.trim().is_empty() {
+        "Generate a bug report from the attached image.".to_string()
+    } else {
+        format!("User description:\n{}", text.trim())
+    };
+    let combined = format!("{system}\n\n{user}");
+    let raw = post_chat(target, build_vision_request(&target.model, &combined, image_base64));
+    let (title, body) = parse_title_and_body(&raw);
+    (title, body, raw)
+}
+
 /// Convenience: summarize the workday via the configured model.
 pub fn daily_summary(target: &AiTarget, blocks: &[ActivityBlock], tickets: &[JiraTicket]) -> String {
     complete(target, &daily_summary_prompt(blocks, tickets))
@@ -399,6 +427,133 @@ pub fn daily_summary(target: &AiTarget, blocks: &[ActivityBlock], tickets: &[Jir
 /// Convenience: explain story-point fairness via the configured model.
 pub fn explain_fairness(target: &AiTarget, items: &[(String, Assessment)]) -> String {
     complete(target, &explain_fairness_prompt(items))
+}
+
+/// Bug-report section catalog: `(key, English label, model instruction)`.
+/// Labels stay English regardless of output language (matches the prompt rule).
+const BUG_SECTIONS: &[(&str, &str, &str)] = &[
+    ("issue", "Issue", "Clear, concise description of the bug/issue. Include what happens, where it happens, and any relevant context."),
+    ("steps", "Steps to Reproduce", "Numbered list of steps to reproduce the bug. Be specific about actions, inputs, and navigation."),
+    ("expected", "Expected Result", "What should happen instead. Be specific about the correct behavior."),
+    ("actual", "Actual Result", "What actually happens. Describe the incorrect behavior, error messages, or visual glitches observed."),
+    ("severity", "Severity / Priority", "Assess the severity (Critical, Major, Minor, Trivial) and priority (High, Medium, Low) based on the impact."),
+    ("environment", "Environment", "Infer or suggest the likely environment details (device, OS, browser/app version, etc.) based on the context provided."),
+    ("preconditions", "Preconditions", "Any conditions or setup that must be in place before the bug can be reproduced."),
+];
+
+/// Sections included when the caller does not specify any.
+pub const DEFAULT_BUG_SECTIONS: &[&str] =
+    &["issue", "steps", "expected", "actual", "severity", "environment"];
+
+/// Build the system prompt for the Bug Writer. Emits a `TITLE:` line followed by
+/// the selected sections; output is written in `language`, but the section labels
+/// (and TITLE) stay English. Unknown section keys are ignored.
+pub fn build_bug_prompt(language: &str, sections: &[String]) -> String {
+    let picked: Vec<&(&str, &str, &str)> = BUG_SECTIONS
+        .iter()
+        .filter(|(key, _, _)| sections.iter().any(|s| s == key))
+        .collect();
+    let format_lines = picked
+        .iter()
+        .map(|(_, label, instr)| format!("{label}:\n[{instr}]"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let labels = picked
+        .iter()
+        .map(|(_, label, _)| format!("\"{label}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "You are an expert QA engineer assistant. Your job is to generate a structured \
+         bug report from the user's input.\n\n\
+         The user will provide one or more of the following:\n\
+         - A text description of the bug or scenario (may be in any language)\n\
+         - A screenshot/image showing the issue\n\n\
+         Based on all provided inputs, generate a bug report in EXACTLY this format:\n\n\
+         TITLE: <one short, action-oriented bug title — max 80 chars, no period at end, \
+         suitable as a Jira issue Summary>\n\n\
+         {format_lines}\n\n\
+         Rules:\n\
+         - IMPORTANT: Write the ENTIRE output in {language}. The user's input may be in any \
+         language, but your output MUST be in {language}.\n\
+         - The TITLE line MUST be the very first line of your response, prefixed with \"TITLE: \"\n\
+         - TITLE should NOT include \"Bug:\", \"Issue:\", \"[BUG]\" or similar prefixes\n\
+         - Leave one blank line after TITLE before the first section\n\
+         - Write in a professional, clear tone; be specific and actionable\n\
+         - If an image is provided, describe what you observe in the context of the bug\n\
+         - If only an image is provided without text, infer the issue from visual context\n\
+         - Do NOT include any sections beyond: TITLE and {labels}\n\
+         - The section labels (TITLE, {labels}) MUST stay in English regardless of output language"
+    )
+}
+
+/// Parse a Bug Writer response into `(title, body)`. The title is taken from a
+/// leading `TITLE: ...` line (surrounding quotes stripped); when absent the title
+/// is empty and the body is the full text. Blank lines around the title are dropped.
+pub fn parse_title_and_body(raw: &str) -> (String, String) {
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let mut title = String::new();
+    let mut body_start = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            body_start = i + 1;
+            continue;
+        }
+        if let Some(rest) = strip_title_prefix(trimmed) {
+            title = rest.trim_matches(|c| c == '"' || c == '\'').trim().to_string();
+            body_start = i + 1;
+        }
+        break; // only the first non-empty line can be a title
+    }
+    while body_start < lines.len() && lines[body_start].trim().is_empty() {
+        body_start += 1;
+    }
+    (title, lines[body_start..].join("\n"))
+}
+
+/// If `line` begins with a case-insensitive `TITLE:` prefix, return the non-empty
+/// remainder; otherwise `None`.
+fn strip_title_prefix(line: &str) -> Option<&str> {
+    let head: String = line.chars().take(5).collect::<String>().to_ascii_lowercase();
+    if head != "title" {
+        return None;
+    }
+    let rest = line[5..].trim_start().strip_prefix(':')?.trim_start();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest)
+    }
+}
+
+/// Build an OpenAI-compatible chat-completion request that optionally carries an
+/// image. With `image_base64`, the `content` becomes a multimodal array
+/// (`text` + `image_url`); a bare base64 string is wrapped into a PNG data URL,
+/// while an existing `data:` URL is passed through. Without an image, `content`
+/// is a plain string (identical to [`build_chat_request`]).
+pub fn build_vision_request(model: &str, prompt: &str, image_base64: Option<&str>) -> Value {
+    let content = match image_base64 {
+        Some(img) => {
+            let url = if img.starts_with("data:") {
+                img.to_string()
+            } else {
+                format!("data:image/png;base64,{img}")
+            };
+            json!([
+                { "type": "text", "text": prompt },
+                { "type": "image_url", "image_url": { "url": url } }
+            ])
+        }
+        None => json!(prompt),
+    };
+    json!({
+        "model": model,
+        "messages": [ { "role": "user", "content": content } ],
+        "temperature": 0.3,
+        "stream": false
+    })
 }
 
 #[cfg(test)]
@@ -566,6 +721,81 @@ Cuma judul tanpa pipa
         assert!(p.contains("(diff dipotong)"));
         // The embedded diff body is capped (prompt is prefix + capped diff + suffix).
         assert!(!p.contains(&"x".repeat(MAX_DIFF_CHARS + 1)));
+    }
+
+    #[test]
+    fn parse_title_and_body_extracts_title_prefix() {
+        let raw = "TITLE: Place Order gagal (500)\n\nIssue: muncul error 500 saat checkout.\nSteps to Reproduce:\n1. buka cart";
+        let (title, body) = parse_title_and_body(raw);
+        assert_eq!(title, "Place Order gagal (500)");
+        assert!(body.starts_with("Issue:"));
+        assert!(!body.contains("TITLE:"));
+    }
+
+    #[test]
+    fn parse_title_and_body_no_prefix_keeps_full_body() {
+        let raw = "Issue: error 500\nActual Result: HTTP 500";
+        let (title, body) = parse_title_and_body(raw);
+        assert_eq!(title, "");
+        assert_eq!(body, raw);
+    }
+
+    #[test]
+    fn parse_title_and_body_strips_quotes_and_leading_blanks() {
+        let raw = "\n\nTITLE: \"Login button stays disabled\"\n\nIssue: ...";
+        let (title, body) = parse_title_and_body(raw);
+        assert_eq!(title, "Login button stays disabled");
+        assert!(body.starts_with("Issue:"));
+    }
+
+    #[test]
+    fn build_bug_prompt_includes_selected_sections_and_rules() {
+        let sections = vec!["issue".to_string(), "steps".to_string(), "severity".to_string()];
+        let p = build_bug_prompt("Indonesia", &sections);
+        // Selected section labels present.
+        assert!(p.contains("Issue"));
+        assert!(p.contains("Steps to Reproduce"));
+        assert!(p.contains("Severity / Priority"));
+        // Unselected section label absent.
+        assert!(!p.contains("Expected Result"));
+        // Output-language rule + TITLE rule present.
+        assert!(p.contains("Indonesia"));
+        assert!(p.contains("TITLE"));
+    }
+
+    #[test]
+    fn build_bug_prompt_ignores_unknown_section_keys() {
+        let sections = vec!["issue".to_string(), "bogus".to_string()];
+        let p = build_bug_prompt("English", &sections);
+        assert!(p.contains("Issue"));
+        assert!(!p.contains("bogus"));
+    }
+
+    #[test]
+    fn build_vision_request_without_image_uses_string_content() {
+        let v = build_vision_request("gemini-2.0-flash", "halo", None);
+        assert_eq!(v["model"], "gemini-2.0-flash");
+        assert_eq!(v["messages"][0]["content"], "halo");
+        assert_eq!(v["stream"], false);
+    }
+
+    #[test]
+    fn build_vision_request_with_image_uses_array_content() {
+        let v = build_vision_request("gemini-2.0-flash", "lihat ini", Some("AAAA"));
+        let content = &v["messages"][0]["content"];
+        assert!(content.is_array());
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "lihat ini");
+        assert_eq!(content[1]["type"], "image_url");
+        // Bare base64 is wrapped into a data URL.
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn build_vision_request_preserves_existing_data_url() {
+        let v = build_vision_request("m", "x", Some("data:image/jpeg;base64,ZZZZ"));
+        let content = &v["messages"][0]["content"];
+        assert_eq!(content[1]["image_url"]["url"], "data:image/jpeg;base64,ZZZZ");
     }
 
     #[test]

@@ -550,6 +550,197 @@ pub fn build_results_adf(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Creating a bug issue (Bug Writer)
+// ---------------------------------------------------------------------------
+
+/// Convert plain multi-line text into an ADF `doc`. Each line becomes a
+/// paragraph; a blank line becomes a content-less paragraph (an empty text node
+/// is invalid ADF, so blank lines must carry no `content`).
+pub fn text_to_adf(text: &str) -> Value {
+    let content: Vec<Value> = text
+        .split('\n')
+        .map(|line| {
+            if line.trim().is_empty() {
+                serde_json::json!({ "type": "paragraph" })
+            } else {
+                serde_json::json!({
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": line }]
+                })
+            }
+        })
+        .collect();
+    serde_json::json!({ "type": "doc", "version": 1, "content": content })
+}
+
+/// Build the `{ "fields": {...} }` body for `POST /rest/api/3/issue`. `priority`
+/// and `assignee_account_id` are omitted when `None`.
+pub fn build_create_issue_body(
+    project_key: &str,
+    issue_type_id: &str,
+    summary: &str,
+    description_adf: &Value,
+    priority: Option<&str>,
+    assignee_account_id: Option<&str>,
+) -> Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("project".into(), serde_json::json!({ "key": project_key }));
+    fields.insert("issuetype".into(), serde_json::json!({ "id": issue_type_id }));
+    fields.insert("summary".into(), serde_json::json!(summary));
+    fields.insert("description".into(), description_adf.clone());
+    if let Some(p) = priority {
+        fields.insert("priority".into(), serde_json::json!({ "name": p }));
+    }
+    if let Some(a) = assignee_account_id {
+        fields.insert("assignee".into(), serde_json::json!({ "accountId": a }));
+    }
+    serde_json::json!({ "fields": Value::Object(fields) })
+}
+
+/// Find an issue type id by name in a createmeta `issuetypes` response. Matches
+/// exactly first, then case-insensitively. Returns `None` if not found.
+pub fn parse_issue_type_id(json: &str, name: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(json).ok()?;
+    let types = root.get("issueTypes").and_then(Value::as_array)?;
+    let id_of = |it: &Value| {
+        it.get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    types
+        .iter()
+        .find(|it| it.get("name").and_then(Value::as_str) == Some(name))
+        .or_else(|| {
+            types.iter().find(|it| {
+                it.get("name")
+                    .and_then(Value::as_str)
+                    .map(|n| n.eq_ignore_ascii_case(name))
+                    .unwrap_or(false)
+            })
+        })
+        .and_then(id_of)
+}
+
+/// Resolve an issue type id (e.g. "Bug") for a project via createmeta.
+/// Thin HTTP wrapper around [`parse_issue_type_id`]; not unit-tested.
+pub fn find_issue_type(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    project_key: &str,
+    issue_type_name: &str,
+) -> Result<String> {
+    let url = format!(
+        "{}/rest/api/3/issue/createmeta/{}/issuetypes?maxResults=200",
+        base_url.trim_end_matches('/'),
+        project_key
+    );
+    let client = reqwest::blocking::Client::new();
+    let body = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    parse_issue_type_id(&body, issue_type_name).ok_or_else(|| {
+        anyhow::anyhow!("Issue type \"{issue_type_name}\" tidak ditemukan di project {project_key}")
+    })
+}
+
+/// A created Jira issue: its key and a browse URL.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CreatedIssue {
+    pub key: String,
+    pub url: String,
+}
+
+/// Create a bug issue (a WRITE to Jira). Returns the new key + browse URL.
+/// Thin HTTP wrapper around [`build_create_issue_body`]; not unit-tested.
+#[allow(clippy::too_many_arguments)]
+pub fn create_issue(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    project_key: &str,
+    issue_type_id: &str,
+    summary: &str,
+    description_adf: &Value,
+    priority: Option<&str>,
+    assignee_account_id: Option<&str>,
+) -> Result<CreatedIssue> {
+    let base = base_url.trim_end_matches('/');
+    let url = format!("{base}/rest/api/3/issue");
+    let body = build_create_issue_body(
+        project_key,
+        issue_type_id,
+        summary,
+        description_adf,
+        priority,
+        assignee_account_id,
+    );
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()?
+        .error_for_status()?
+        .text()?;
+    let parsed: Value = serde_json::from_str(&resp)?;
+    let key = parsed
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Jira tidak mengembalikan key issue"))?
+        .to_string();
+    let url = format!("{base}/browse/{key}");
+    Ok(CreatedIssue { key, url })
+}
+
+/// Upload a base64 image as an attachment on an existing issue (a WRITE to Jira).
+/// Accepts a bare base64 string or a `data:` URL. Thin HTTP wrapper; not unit-tested.
+pub fn upload_attachment(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    issue_key: &str,
+    filename: &str,
+    image_base64: &str,
+) -> Result<()> {
+    use base64::Engine;
+    // Strip a data-URL prefix if present.
+    let raw = match image_base64.find(',') {
+        Some(idx) if image_base64.starts_with("data:") => &image_base64[idx + 1..],
+        _ => image_base64,
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .map_err(|e| anyhow::anyhow!("screenshot bukan base64 valid: {e}"))?;
+    let safe_name = filename.replace(['\r', '\n', '"'], "_");
+    let part = reqwest::blocking::multipart::Part::bytes(bytes)
+        .file_name(safe_name)
+        .mime_str("application/octet-stream")?;
+    let form = reqwest::blocking::multipart::Form::new().part("file", part);
+    let url = format!(
+        "{}/rest/api/3/issue/{}/attachments",
+        base_url.trim_end_matches('/'),
+        issue_key
+    );
+    let client = reqwest::blocking::Client::new();
+    client
+        .post(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .header("X-Atlassian-Token", "no-check")
+        .multipart(form)
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+
 /// Add a comment to a Jira issue (a WRITE to Jira). `body_adf` is the ADF doc
 /// node. Thin HTTP wrapper; not unit-tested.
 pub fn add_comment(
@@ -580,6 +771,60 @@ pub fn add_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_to_adf_wraps_each_line_in_a_paragraph() {
+        let adf = text_to_adf("Line one\nLine two");
+        assert_eq!(adf["type"], "doc");
+        assert_eq!(adf["version"], 1);
+        let content = adf["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "paragraph");
+        assert_eq!(content[0]["content"][0]["text"], "Line one");
+        assert_eq!(content[1]["content"][0]["text"], "Line two");
+    }
+
+    #[test]
+    fn text_to_adf_blank_line_becomes_contentless_paragraph() {
+        // A blank line must NOT emit an empty text node (invalid ADF).
+        let adf = text_to_adf("A\n\nB");
+        let content = adf["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert!(content[1].get("content").is_none());
+    }
+
+    #[test]
+    fn build_create_issue_body_minimal_has_required_fields() {
+        let desc = text_to_adf("body");
+        let v = build_create_issue_body("QAT", "10001", "My bug", &desc, None, None);
+        assert_eq!(v["fields"]["project"]["key"], "QAT");
+        assert_eq!(v["fields"]["issuetype"]["id"], "10001");
+        assert_eq!(v["fields"]["summary"], "My bug");
+        assert_eq!(v["fields"]["description"]["type"], "doc");
+        assert!(v["fields"].get("priority").is_none());
+        assert!(v["fields"].get("assignee").is_none());
+    }
+
+    #[test]
+    fn build_create_issue_body_includes_optional_priority_and_assignee() {
+        let desc = text_to_adf("body");
+        let v = build_create_issue_body("QAT", "10001", "s", &desc, Some("High"), Some("acc-123"));
+        assert_eq!(v["fields"]["priority"]["name"], "High");
+        assert_eq!(v["fields"]["assignee"]["accountId"], "acc-123");
+    }
+
+    #[test]
+    fn parse_issue_type_id_matches_by_name_case_insensitively() {
+        let json = r#"{"issueTypes":[{"id":"10000","name":"Task"},{"id":"10004","name":"Bug"}]}"#;
+        assert_eq!(parse_issue_type_id(json, "Bug").unwrap(), "10004");
+        assert_eq!(parse_issue_type_id(json, "bug").unwrap(), "10004");
+    }
+
+    #[test]
+    fn parse_issue_type_id_returns_none_when_absent() {
+        let json = r#"{"issueTypes":[{"id":"10000","name":"Task"}]}"#;
+        assert!(parse_issue_type_id(json, "Bug").is_none());
+    }
 
     #[test]
     fn build_results_adf_has_heading_panel_and_status_table() {

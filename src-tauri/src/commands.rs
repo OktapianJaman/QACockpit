@@ -934,6 +934,116 @@ pub fn generate_test_cases_from_prs(
     db::list_test_cases(&conn, &key).map_err(|e| e.to_string())
 }
 
+/// A generated bug report: an editable title + body, plus the raw model output.
+#[derive(Debug, Serialize)]
+pub struct BugReport {
+    pub title: String,
+    pub body: String,
+    pub raw: String,
+}
+
+/// Generate a structured bug report from free-form text and an optional
+/// screenshot (base64, bare or `data:` URL). The result is returned for the user
+/// to review/edit before it is pushed to Jira via [`create_jira_bug`].
+#[tauri::command]
+pub fn generate_bug_report(
+    state: tauri::State<'_, AppState>,
+    text: String,
+    image_base64: Option<String>,
+    language: String,
+    sections: Vec<String>,
+) -> Result<BugReport, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+
+    if text.trim().is_empty() && image_base64.is_none() {
+        return Err("Isi deskripsi bug atau lampirkan screenshot dulu".into());
+    }
+    let lang = if language.trim().is_empty() { "Indonesia" } else { language.trim() };
+    let sections: Vec<String> = if sections.is_empty() {
+        crate::ai::gemma::DEFAULT_BUG_SECTIONS.iter().map(|s| s.to_string()).collect()
+    } else {
+        sections
+    };
+
+    let (title, body, raw) = crate::ai::gemma::generate_bug_report(
+        &ai_target(&cfg),
+        &text,
+        image_base64.as_deref(),
+        lang,
+        &sections,
+    );
+    if body.trim().is_empty() {
+        return Err("AI nggak menghasilkan bug report — coba lagi atau cek API key / LM Studio".into());
+    }
+    Ok(BugReport { title, body, raw })
+}
+
+/// Create a Bug issue in Jira from a (reviewed) report and optionally attach the
+/// screenshot. Returns the new issue key + browse URL.
+#[tauri::command]
+pub fn create_jira_bug(
+    state: tauri::State<'_, AppState>,
+    project_key: String,
+    summary: String,
+    body: String,
+    priority: Option<String>,
+    assignee_id: Option<String>,
+    image_base64: Option<String>,
+) -> Result<integrations::jira::CreatedIssue, String> {
+    let conn = state.conn()?;
+    let cfg = load_config(&conn)?;
+    require_jira_creds(&cfg)?;
+
+    if project_key.trim().is_empty() {
+        return Err("Pilih project Jira dulu".into());
+    }
+    if summary.trim().is_empty() {
+        return Err("Title bug nggak boleh kosong".into());
+    }
+
+    let issue_type_id = integrations::jira::find_issue_type(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        project_key.trim(),
+        "Bug",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let description = integrations::jira::text_to_adf(&body);
+    let priority = priority.as_deref().filter(|p| !p.trim().is_empty());
+    let assignee = assignee_id.as_deref().filter(|a| !a.trim().is_empty());
+
+    let created = integrations::jira::create_issue(
+        &cfg.jira_base_url,
+        &cfg.jira_email,
+        &cfg.jira_token,
+        project_key.trim(),
+        &issue_type_id,
+        summary.trim(),
+        &description,
+        priority,
+        assignee,
+    )
+    .map_err(|e| e.to_string())?;
+
+    if let Some(img) = image_base64.as_deref().filter(|s| !s.trim().is_empty()) {
+        // A failed attachment must not lose the created issue — report it softly.
+        integrations::jira::upload_attachment(
+            &cfg.jira_base_url,
+            &cfg.jira_email,
+            &cfg.jira_token,
+            &created.key,
+            "screenshot.png",
+            img,
+        )
+        .map_err(|e| format!("Bug {} dibuat, tapi gagal lampirkan screenshot: {e}", created.key))?;
+    }
+
+    Ok(created)
+}
+
 /// Send the ticket's test results to Jira as a comment with an ADF table.
 /// Returns the summary line so the UI can toast it.
 #[tauri::command]

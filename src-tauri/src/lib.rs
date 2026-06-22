@@ -79,6 +79,8 @@ pub fn run() {
             commands::generate_test_cases_from_pr,
             commands::generate_test_cases_from_prs,
             commands::post_test_results,
+            commands::generate_bug_report,
+            commands::create_jira_bug,
             commands::list_ticket_prs,
             commands::summarize_pr,
         ])

@@ -26,6 +26,7 @@
         <span class="brand">QA Cockpit</span>
       </div>
       <div class="topbar-right">
+        <button id="bugwriter-btn" class="btn" title="Tulis bug report pakai AI">🐞 Bug Writer</button>
         <button id="sync-btn" class="btn" title="Tarik data Jira & GitHub">Sync</button>
         <button id="gear-btn" class="btn icon-btn" title="Pengaturan">⚙</button>
       </div>
@@ -144,6 +145,89 @@
         <div class="confirm-actions">
           <button id="confirm-cancel" class="btn">Batal</button>
           <button id="confirm-ok" class="btn primary">Ya, lanjut</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bug Writer: free-form notes + screenshot -> structured bug -> push to Jira -->
+    <div id="bugwriter-overlay" class="overlay hidden">
+      <div class="bw-panel card">
+        <div class="card-head">
+          <h2>🐞 Bug Writer</h2>
+          <button id="bw-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <p class="bw-sub">Ubah catatan bug berantakan + screenshot jadi bug report rapi, lalu kirim ke Jira.</p>
+
+        <label class="bw-label">Deskripsi bug
+          <textarea id="bw-text" class="bw-text" rows="4"
+            placeholder="mis. pas klik Place Order di alamat tersimpan, muncul error 500…"></textarea>
+        </label>
+
+        <label class="bw-label">Screenshot <span class="opt">(opsional)</span></label>
+        <div id="bw-drop" class="bw-drop" tabindex="0">
+          <input id="bw-file" type="file" accept="image/*" hidden />
+          <img id="bw-preview" class="bw-preview hidden" alt="preview" />
+          <div id="bw-drop-hint" class="bw-drop-hint">
+            <strong>Klik</strong>, drag, atau <strong>paste (Ctrl+V)</strong> screenshot
+          </div>
+          <button id="bw-clear-img" class="btn small bw-clear hidden" type="button">Hapus gambar</button>
+        </div>
+
+        <div class="bw-opts">
+          <label class="bw-label">Bahasa output
+            <select id="bw-language">
+              <option value="Indonesia" selected>Indonesia</option>
+              <option value="English">English</option>
+            </select>
+          </label>
+          <fieldset class="bw-sections">
+            <legend>Sections</legend>
+            <label><input type="checkbox" value="issue" checked /> Issue</label>
+            <label><input type="checkbox" value="steps" checked /> Steps</label>
+            <label><input type="checkbox" value="expected" checked /> Expected</label>
+            <label><input type="checkbox" value="actual" checked /> Actual</label>
+            <label><input type="checkbox" value="severity" checked /> Severity</label>
+            <label><input type="checkbox" value="environment" checked /> Environment</label>
+            <label><input type="checkbox" value="preconditions" /> Preconditions</label>
+          </fieldset>
+        </div>
+
+        <div class="bw-gen-row">
+          <button id="bw-generate" class="btn primary">✨ Generate Bug Report</button>
+        </div>
+
+        <!-- Result + push-to-Jira (revealed after a successful generate) -->
+        <div id="bw-result" class="bw-result hidden">
+          <h3 class="bw-h">Hasil <small>(boleh diedit sebelum dikirim)</small></h3>
+          <label class="bw-label">Title
+            <input type="text" id="bw-title" class="bw-title" />
+          </label>
+          <label class="bw-label">Detail
+            <textarea id="bw-body" class="bw-body" rows="10"></textarea>
+          </label>
+          <div class="bw-push">
+            <label class="bw-label">Project
+              <select id="bw-project"></select>
+            </label>
+            <label class="bw-label">Priority
+              <select id="bw-priority">
+                <option value="" selected>(default)</option>
+                <option value="Highest">Highest</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+                <option value="Lowest">Lowest</option>
+              </select>
+            </label>
+            <label class="bw-label">Assignee
+              <select id="bw-assignee"></select>
+            </label>
+          </div>
+          <small class="field-hint">Screenshot (kalau ada) otomatis di-attach ke ticket.</small>
+          <div class="bw-push-actions">
+            <button id="bw-copy" class="btn small" type="button">📋 Copy</button>
+            <button id="bw-create" class="btn primary" type="button">📤 Buat Bug di Jira</button>
+          </div>
         </div>
       </div>
     </div>
