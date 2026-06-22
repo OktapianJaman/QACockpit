@@ -26,6 +26,7 @@
         <span class="brand">QA Cockpit</span>
       </div>
       <div class="topbar-right">
+        <button id="ticket-btn" class="btn" title="Bikin tiket QAT massal dari daftar PR">🎫 Tiket</button>
         <button id="summary-btn" class="btn" title="Ringkasan kerja harian (AI)">📋 Ringkasan</button>
         <button id="bugwriter-btn" class="btn" title="Tulis bug report pakai AI">🐞 Bug Writer</button>
         <button id="sync-btn" class="btn" title="Tarik data Jira & GitHub">Sync</button>
@@ -149,6 +150,47 @@
           <button id="confirm-cancel" class="btn">Batal</button>
           <button id="confirm-ok" class="btn primary">Ya, lanjut</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Ticket Builder: paste PR list -> AI parse -> editable table -> create Stories -->
+    <div id="ticket-overlay" class="overlay hidden">
+      <div class="tb-panel card">
+        <div class="card-head">
+          <h2>🎫 Ticket Builder</h2>
+          <button id="tb-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <p class="bw-sub">Tempel daftar PR (format bebas) → AI parse jadi tabel → koreksi → buat Story QAT di bawah epic.</p>
+        <div class="tb-top">
+          <label class="bw-label">Epic key
+            <input type="text" id="tb-epic" placeholder="QAT-3423" />
+          </label>
+          <label class="bw-label">App label
+            <input type="text" id="tb-app" value="GTG" />
+          </label>
+        </div>
+        <label class="bw-label">Daftar PR
+          <textarea id="tb-blob" class="bw-text" rows="5"
+            placeholder="[USSTOCK-2835] Social stock prediction #3197 @Reva …"></textarea>
+        </label>
+        <div class="tb-actions">
+          <button id="tb-parse" class="btn primary">✨ Parse</button>
+        </div>
+
+        <div id="tb-table-wrap" class="hidden">
+          <table class="tb-table">
+            <thead>
+              <tr><th></th><th>Source</th><th>Title</th><th>PR#</th><th>Assignee</th></tr>
+            </thead>
+            <tbody id="tb-rows"></tbody>
+          </table>
+          <small class="field-hint">Centang baris yang mau dibuat. Reporter=Theo, Priority=Highest, sprint aktif & AC otomatis.</small>
+          <div class="tb-create-row">
+            <button id="tb-create" class="btn primary">📤 Buat tiket</button>
+          </div>
+        </div>
+
+        <div id="tb-results" class="tb-results"></div>
       </div>
     </div>
 

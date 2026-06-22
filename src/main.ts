@@ -1366,6 +1366,149 @@ async function loadFromJira(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Ticket Builder
+// ---------------------------------------------------------------------------
+
+interface BuilderRow {
+  source_ticket: string;
+  title: string;
+  pr_number: string;
+  pr_url: string;
+  assignee: string;
+}
+interface ParsedBlob {
+  epic: string;
+  app: string;
+  rows: BuilderRow[];
+}
+interface StoryResult {
+  title: string;
+  key: string | null;
+  url: string | null;
+  error: string | null;
+}
+
+function openTicketBuilder(): void {
+  ($("tb-blob") as HTMLTextAreaElement).value = "";
+  $("tb-rows").innerHTML = "";
+  show($("tb-table-wrap"), false);
+  $("tb-results").innerHTML = "";
+  show($("ticket-overlay"), true);
+}
+
+function closeTicketBuilder(): void {
+  show($("ticket-overlay"), false);
+}
+
+/** Render the editable rows table from parsed data. */
+function renderBuilderRows(rows: BuilderRow[]): void {
+  const tbody = $("tb-rows");
+  tbody.innerHTML = rows
+    .map(
+      (r) => `
+      <tr data-pr-url="${esc(r.pr_url)}">
+        <td><input type="checkbox" class="tb-pick" checked /></td>
+        <td><input class="tb-c tb-src" value="${esc(r.source_ticket)}" placeholder="—" /></td>
+        <td><input class="tb-c tb-title" value="${esc(r.title)}" /></td>
+        <td><input class="tb-c tb-pr" value="${esc(r.pr_number)}" /></td>
+        <td><input class="tb-c tb-asg" value="${esc(r.assignee)}" /></td>
+      </tr>`
+    )
+    .join("");
+  show($("tb-table-wrap"), rows.length > 0);
+}
+
+async function parseTicketBlob(): Promise<void> {
+  const blob = ($("tb-blob") as HTMLTextAreaElement).value;
+  if (!blob.trim()) {
+    toast("Tempel daftar PR-nya dulu.", "error");
+    return;
+  }
+  const btn = $<HTMLButtonElement>("tb-parse");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("busy");
+  btn.textContent = "Parsing…";
+  try {
+    const parsed = await invoke<ParsedBlob>("parse_ticket_blob", { blob });
+    if (parsed.epic) ($("tb-epic") as HTMLInputElement).value = parsed.epic;
+    if (parsed.app) ($("tb-app") as HTMLInputElement).value = parsed.app;
+    renderBuilderRows(parsed.rows || []);
+    $("tb-results").innerHTML = "";
+    if (!parsed.rows || parsed.rows.length === 0) toast("AI nggak nemu baris PR.", "error");
+  } catch (e) {
+    toast(`Gagal parse: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+    btn.textContent = prev;
+  }
+}
+
+/** Collect the checked rows from the table. */
+function collectBuilderRows(): BuilderRow[] {
+  return Array.from($("tb-rows").querySelectorAll<HTMLTableRowElement>("tr"))
+    .filter((tr) => (tr.querySelector(".tb-pick") as HTMLInputElement)?.checked)
+    .map((tr) => ({
+      source_ticket: (tr.querySelector(".tb-src") as HTMLInputElement).value.trim(),
+      title: (tr.querySelector(".tb-title") as HTMLInputElement).value.trim(),
+      pr_number: (tr.querySelector(".tb-pr") as HTMLInputElement).value.trim(),
+      pr_url: tr.dataset.prUrl || "",
+      assignee: (tr.querySelector(".tb-asg") as HTMLInputElement).value.trim(),
+    }));
+}
+
+async function createStoryTickets(): Promise<void> {
+  const epic = ($("tb-epic") as HTMLInputElement).value.trim();
+  const app = ($("tb-app") as HTMLInputElement).value.trim();
+  const rows = collectBuilderRows();
+  if (!epic) {
+    toast("Isi Epic key dulu.", "error");
+    return;
+  }
+  if (rows.length === 0) {
+    toast("Centang minimal satu baris.", "error");
+    return;
+  }
+  const btn = $<HTMLButtonElement>("tb-create");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("busy");
+  btn.textContent = `Membuat ${rows.length}…`;
+  try {
+    const results = await invoke<StoryResult[]>("create_story_tickets", { epic, app, rows });
+    const ok = results.filter((r) => r.key).length;
+    $("tb-results").innerHTML =
+      `<h3 class="bw-h">Hasil — ${ok}/${results.length} dibuat</h3>` +
+      results
+        .map((r) =>
+          r.key
+            ? `<div class="tb-res ok">✓ <a class="ext-link" data-url="${esc(r.url || "")}">${esc(r.key)}</a> — ${esc(r.title)}</div>`
+            : `<div class="tb-res err">✗ ${esc(r.title)} — ${esc(r.error || "gagal")}</div>`
+        )
+        .join("");
+    toast(`${ok}/${results.length} tiket dibuat.`);
+    if (ok > 0) void refreshBoard();
+  } catch (e) {
+    toast(`Gagal buat tiket: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+    btn.textContent = prev;
+  }
+}
+
+function wireTicketBuilder(): void {
+  $("ticket-btn").addEventListener("click", openTicketBuilder);
+  $("tb-close").addEventListener("click", closeTicketBuilder);
+  $("ticket-overlay").addEventListener("click", (e) => {
+    if (e.target === $("ticket-overlay")) closeTicketBuilder();
+  });
+  $("tb-parse").addEventListener("click", () => void parseTicketBlob());
+  $("tb-create").addEventListener("click", () => void createStoryTickets());
+}
+
+// ---------------------------------------------------------------------------
 // Daily summary
 // ---------------------------------------------------------------------------
 
@@ -1822,6 +1965,7 @@ function wireEvents(): void {
 
   wireBugWriter();
   wireSummary();
+  wireTicketBuilder();
 }
 
 async function init(): Promise<void> {
