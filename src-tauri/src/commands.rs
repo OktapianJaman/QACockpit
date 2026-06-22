@@ -1304,7 +1304,15 @@ fn build_and_create_story(
             &[],
         )
     } else {
-        let generated = generate_ac_from_pr(cfg, &row.pr_url, &row.pr_number);
+        let mut generated = generate_ac_from_pr(cfg, &row.pr_url, &row.pr_number);
+        // No source and nothing usable from GitHub: fall back to the row title as
+        // the acceptance criterion so the Story still has valid AC and gets created.
+        if generated.iter().all(|l| l.trim().is_empty()) {
+            let t = row.title.trim();
+            if !t.is_empty() {
+                generated = vec![t.to_string()];
+            }
+        }
         let key = if src_key.is_empty() { None } else { Some(src_key) };
         integrations::jira::build_ac_adf(
             key,
@@ -1322,12 +1330,17 @@ fn build_and_create_story(
     } else {
         format!("[{src_key}] ")
     };
+    let pr_suffix = if row.pr_number.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" #{}", row.pr_number.trim())
+    };
     let summary = format!(
-        "[UAT] [{}] {}{} #{}",
+        "[UAT] [{}] {}{}{}",
         app.trim(),
         prefix,
         row.title.trim(),
-        row.pr_number.trim()
+        pr_suffix
     );
 
     // Squad: copy from source; default to Quality Assurance Team (QAT) when no source.

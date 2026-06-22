@@ -866,9 +866,11 @@ pub fn build_ac_adf(
         _ => content.push(para_em("No source ticket - this PR has no linked Jira ticket.")),
     }
 
-    // GitHub PR
-    content.push(heading("GitHub PR"));
-    content.push(link_para(pr_url, pr_url));
+    // GitHub PR (omit entirely when there is no PR url, to avoid empty link nodes).
+    if !pr_url.trim().is_empty() {
+        content.push(heading("GitHub PR"));
+        content.push(link_para(pr_url, pr_url));
+    }
 
     // Divider + Acceptance Criteria
     content.push(serde_json::json!({ "type": "rule" }));
@@ -880,7 +882,6 @@ pub fn build_ac_adf(
             }
         }
         None => {
-            content.push(para_em(&format!("Based on PR #{pr_number} description:")));
             let items: Vec<Value> = generated
                 .iter()
                 .filter(|l| !l.trim().is_empty())
@@ -888,7 +889,19 @@ pub fn build_ac_adf(
                     serde_json::json!({ "type": "listItem", "content": [ para_text(l) ] })
                 })
                 .collect();
-            content.push(serde_json::json!({ "type": "orderedList", "content": items }));
+            // An empty ordered/bullet list is invalid ADF (min 1 item) and makes
+            // Jira reject the create. Fall back to a paragraph when there's nothing.
+            if items.is_empty() {
+                content.push(para_em("No acceptance criteria provided yet."));
+            } else {
+                let lead = if pr_number.trim().is_empty() {
+                    "Derived from the change title:".to_string()
+                } else {
+                    format!("Based on PR #{pr_number} description:")
+                };
+                content.push(para_em(&lead));
+                content.push(serde_json::json!({ "type": "orderedList", "content": items }));
+            }
         }
     }
 
@@ -1130,6 +1143,54 @@ mod tests {
         assert!(s.contains("Acceptance Criteria"));
         assert!(s.contains("Stocks show"));
         assert!(s.contains("orderedList"));
+    }
+
+    // Recursively true if any node is an empty ordered/bullet list (invalid ADF).
+    fn has_empty_list(v: &Value) -> bool {
+        if let Some(t) = v.get("type").and_then(Value::as_str) {
+            if (t == "orderedList" || t == "bulletList")
+                && v.get("content")
+                    .and_then(Value::as_array)
+                    .map(|a| a.is_empty())
+                    .unwrap_or(true)
+            {
+                return true;
+            }
+        }
+        match v {
+            Value::Array(a) => a.iter().any(has_empty_list),
+            Value::Object(o) => o.values().any(has_empty_list),
+            _ => false,
+        }
+    }
+
+    // Recursively true if any text node has empty text (invalid ADF).
+    fn has_empty_text(v: &Value) -> bool {
+        if v.get("type").and_then(Value::as_str) == Some("text")
+            && v.get("text")
+                .and_then(Value::as_str)
+                .map(str::is_empty)
+                .unwrap_or(true)
+        {
+            return true;
+        }
+        match v {
+            Value::Array(a) => a.iter().any(has_empty_text),
+            Value::Object(o) => o.values().any(has_empty_text),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn build_ac_adf_no_source_no_pr_empty_generated_is_valid() {
+        // Source empty AND nothing from GitHub AND no PR url: must still be valid
+        // ADF (no empty list, no empty text node) so Jira accepts the create.
+        let adf = build_ac_adf(None, None, None, "https://x.atlassian.net", "", "", &[]);
+        assert_eq!(adf["type"], "doc");
+        assert!(!has_empty_list(&adf), "ADF must not contain an empty list");
+        assert!(!has_empty_text(&adf), "ADF must not contain empty text nodes");
+        // No PR url -> no GitHub PR link section.
+        assert!(!adf.to_string().contains("GitHub PR"));
     }
 
     #[test]
