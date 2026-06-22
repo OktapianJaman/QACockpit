@@ -268,14 +268,23 @@ function displayColumn(status: string): string {
   return DONE_KEYWORDS.some((k) => s.includes(k)) ? "Done" : status;
 }
 
-/** Distinct DISPLAY columns present, ordered by preferred sequence then alpha. */
+// Canonical QA columns that always render — even with zero tickets — so they're
+// always available as drag-and-drop targets. A status already present (any case)
+// keeps its real Jira name; missing ones are added from here.
+const ALWAYS_COLUMNS = ["Ready for QA", "Today", "QA In Progress", "Done"];
+
+/** DISPLAY columns to render: those present + the always-on QA columns, deduped
+ *  case-insensitively, ordered by preferred sequence then alpha. */
 function orderedColumns(tickets: BoardTicket[]): string[] {
-  return [...new Set(tickets.map((t) => displayColumn(t.status)).filter(Boolean))].sort(
-    (a, b) => {
-      const r = statusRank(a) - statusRank(b);
-      return r !== 0 ? r : a.localeCompare(b);
-    }
-  );
+  const cols = new Set(tickets.map((t) => displayColumn(t.status)).filter(Boolean));
+  const lower = new Set([...cols].map((c) => c.toLowerCase()));
+  for (const c of ALWAYS_COLUMNS) {
+    if (!lower.has(c.toLowerCase())) cols.add(c);
+  }
+  return [...cols].sort((a, b) => {
+    const r = statusRank(a) - statusRank(b);
+    return r !== 0 ? r : a.localeCompare(b);
+  });
 }
 
 /** Build one card (click → detail; inline points; "pindah" → transition picker).
