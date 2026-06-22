@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::core::fairness::{Assessment, Fairness};
 use crate::core::types::ActivityBlock;
+use crate::db::QaActivity;
 use crate::integrations::jira::JiraTicket;
 
 /// Google Gemini OpenAI-compatible chat endpoint.
@@ -117,6 +118,68 @@ pub fn daily_summary_prompt(blocks: &[ActivityBlock], tickets: &[JiraTicket]) ->
 
     s.push_str("\nBuat ringkasan kerja harian dari data di atas.");
     s
+}
+
+/// Build an Indonesian prompt for the daily QA summary from the actions logged
+/// today (status moves + point sets) and the current board snapshot. Unlike
+/// [`daily_summary_prompt`] this needs no desktop activity tracking — it reports
+/// what the QA actually did in the app plus where the board stands.
+pub fn qa_summary_prompt(activities: &[QaActivity], tickets: &[JiraTicket]) -> String {
+    let fmt = |p: f64| p.to_string(); // f64 Display prints 3.0 as "3", 3.5 as "3.5"
+
+    let mut s = String::new();
+    s.push_str(
+        "Kamu adalah asisten QA. Buat ringkasan kerja QA harian dalam bahasa Indonesia \
+         yang singkat dan jelas, berdasarkan AKSI yang dilakukan hari ini dan kondisi \
+         board saat ini. Sebutkan apa yang dikerjakan (tiket digeser/di-pass/di-fail), \
+         dan total poin yang diselesaikan.\n\n",
+    );
+
+    s.push_str("Aksi hari ini:\n");
+    if activities.is_empty() {
+        s.push_str("- (belum ada aksi tercatat hari ini)\n");
+    } else {
+        for a in activities {
+            match a.kind.as_str() {
+                "points" => {
+                    let p = a.points.map(fmt).unwrap_or_else(|| "-".to_string());
+                    s.push_str(&format!("- {} ({}): set {} poin\n", a.ticket_key, a.summary, p));
+                }
+                _ => s.push_str(&format!(
+                    "- {} ({}): {} -> {}\n",
+                    a.ticket_key, a.summary, a.from_status, a.to_status
+                )),
+            }
+        }
+    }
+
+    s.push_str("\nKondisi board sekarang (status: jumlah tiket, poin):\n");
+    if tickets.is_empty() {
+        s.push_str("- (tidak ada tiket)\n");
+    } else {
+        use std::collections::BTreeMap;
+        let mut by_status: BTreeMap<&str, (usize, f64)> = BTreeMap::new();
+        let mut total = 0.0;
+        for t in tickets {
+            let e = by_status.entry(t.status.as_str()).or_insert((0, 0.0));
+            e.0 += 1;
+            let p = t.story_points.unwrap_or(0.0);
+            e.1 += p;
+            total += p;
+        }
+        for (status, (count, pts)) in &by_status {
+            s.push_str(&format!("- {}: {} tiket, {} poin\n", status, count, fmt(*pts)));
+        }
+        s.push_str(&format!("Total story point semua tiket: {}\n", fmt(total)));
+    }
+
+    s.push_str("\nBuat ringkasan kerja QA harian dari data di atas.");
+    s
+}
+
+/// Convenience: generate the daily QA summary via the configured model.
+pub fn qa_summary(target: &AiTarget, activities: &[QaActivity], tickets: &[JiraTicket]) -> String {
+    complete(target, &qa_summary_prompt(activities, tickets))
 }
 
 /// Build an Indonesian prompt asking Gemma to explain which tickets are
@@ -580,6 +643,39 @@ mod tests {
             story_points: Some(3.0),
             updated: "2026-06-19".to_string(),
         }
+    }
+
+    #[test]
+    fn qa_summary_prompt_lists_actions_and_board() {
+        let acts = vec![
+            crate::db::QaActivity {
+                ts: "2026-06-22T09:00:00+07:00".into(),
+                ticket_key: "QAT-1".into(),
+                summary: "Support CX Account Opening".into(),
+                kind: "transition".into(),
+                from_status: "Ready for QA".into(),
+                to_status: "QA In Progress".into(),
+                points: None,
+            },
+            crate::db::QaActivity {
+                ts: "2026-06-22T10:00:00+07:00".into(),
+                ticket_key: "QAT-2".into(),
+                summary: "Deposit Method".into(),
+                kind: "points".into(),
+                from_status: String::new(),
+                to_status: String::new(),
+                points: Some(3.0),
+            },
+        ];
+        let tickets = vec![ticket("QAT-1", "Support CX Account Opening")];
+        let p = qa_summary_prompt(&acts, &tickets);
+        // Actions present.
+        assert!(p.contains("QAT-1"));
+        assert!(p.contains("QA In Progress"));
+        assert!(p.contains("3")); // points set
+        // Board snapshot + Indonesian instruction.
+        assert!(p.contains("board"));
+        assert!(p.contains("ringkasan"));
     }
 
     #[test]

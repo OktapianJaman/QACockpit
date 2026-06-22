@@ -191,6 +191,65 @@ pub fn set_block_ticket(conn: &Connection, block_id: i64, ticket_key: &str) -> R
     Ok(())
 }
 
+/// One logged QA action (a status move or a point set) for the daily summary.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QaActivity {
+    pub ts: String,
+    pub ticket_key: String,
+    pub summary: String,
+    pub kind: String,
+    pub from_status: String,
+    pub to_status: String,
+    pub points: Option<f64>,
+}
+
+/// Record a QA action taken in the app. `from_status`/`to_status` are used for
+/// `kind = "transition"`; `points` for `kind = "points"`.
+#[allow(clippy::too_many_arguments)]
+pub fn log_qa_activity(
+    conn: &Connection,
+    day: &str,
+    ts: &str,
+    ticket_key: &str,
+    summary: &str,
+    kind: &str,
+    from_status: &str,
+    to_status: &str,
+    points: Option<f64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO qa_activity
+           (day, ts, ticket_key, summary, kind, from_status, to_status, points)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![day, ts, ticket_key, summary, kind, from_status, to_status, points],
+    )?;
+    Ok(())
+}
+
+/// List the QA actions logged on `day`, oldest first.
+pub fn list_qa_activity_for_day(conn: &Connection, day: &str) -> Result<Vec<QaActivity>> {
+    let mut stmt = conn.prepare(
+        "SELECT ts, ticket_key, summary, kind, from_status, to_status, points
+         FROM qa_activity WHERE day = ?1 ORDER BY ts ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([day], |row| {
+        Ok(QaActivity {
+            ts: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            ticket_key: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            summary: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            kind: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            from_status: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            to_status: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            points: row.get::<_, Option<f64>>(6)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Upsert an AI summary for `day` of the given `kind`.
 pub fn set_ai_summary(conn: &Connection, day: &str, kind: &str, body: &str) -> Result<()> {
     conn.execute(
@@ -331,6 +390,60 @@ mod tests {
             |row| row.get::<_, Option<String>>(0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn log_and_list_qa_activity_for_day() {
+        let conn = open(":memory:").unwrap();
+
+        log_qa_activity(
+            &conn,
+            "2026-06-22",
+            "2026-06-22T09:00:00+07:00",
+            "QAT-1",
+            "Support CX Account Opening",
+            "transition",
+            "Ready for QA",
+            "QA In Progress",
+            None,
+        )
+        .unwrap();
+        log_qa_activity(
+            &conn,
+            "2026-06-22",
+            "2026-06-22T10:00:00+07:00",
+            "QAT-2",
+            "Deposit Method",
+            "points",
+            "",
+            "",
+            Some(3.0),
+        )
+        .unwrap();
+        // A different day must be excluded.
+        log_qa_activity(
+            &conn,
+            "2026-06-21",
+            "2026-06-21T09:00:00+07:00",
+            "QAT-9",
+            "Old",
+            "transition",
+            "To Do",
+            "Ready for QA",
+            None,
+        )
+        .unwrap();
+
+        let acts = list_qa_activity_for_day(&conn, "2026-06-22").unwrap();
+        assert_eq!(acts.len(), 2);
+        // Ordered by ts ascending.
+        assert_eq!(acts[0].ticket_key, "QAT-1");
+        assert_eq!(acts[0].kind, "transition");
+        assert_eq!(acts[0].from_status, "Ready for QA");
+        assert_eq!(acts[0].to_status, "QA In Progress");
+        assert_eq!(acts[1].ticket_key, "QAT-2");
+        assert_eq!(acts[1].kind, "points");
+        assert_eq!(acts[1].points, Some(3.0));
     }
 
     #[test]

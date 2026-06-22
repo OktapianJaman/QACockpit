@@ -604,27 +604,41 @@ pub async fn generate_ai_summary(
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
-    let blocks = db::list_blocks_for_day(&conn, &day).map_err(|e| e.to_string())?;
+    // QA actions logged today (status moves + point sets).
+    let activities = db::list_qa_activity_for_day(&conn, &day).map_err(|e| e.to_string())?;
 
-    // Tickets that have time logged today, hydrated from jira_tickets.
-    let ticket_time = db::get_ticket_time(&conn, &day).map_err(|e| e.to_string())?;
-    let mut tickets = Vec::new();
-    for (key, _secs) in ticket_time {
-        let (summary, status, story_points) = lookup_jira(&conn, &key);
-        tickets.push(crate::integrations::jira::JiraTicket {
-            key,
-            summary,
-            status,
-            story_points,
-            updated: String::new(),
-        });
-    }
+    // Current board snapshot (all synced tickets) for context.
+    let tickets = load_all_tickets(&conn).map_err(|e| e.to_string())?;
 
-    let summary = crate::ai::gemma::daily_summary(&ai_target(&cfg), &blocks, &tickets);
+    let summary = crate::ai::gemma::qa_summary(&ai_target(&cfg), &activities, &tickets);
     db::set_ai_summary(&conn, &day, "daily", &summary).map_err(|e| e.to_string())?;
     Ok(summary)
     })
     .await
+}
+
+/// Load every synced Jira ticket as a `JiraTicket` (for the daily summary's
+/// board snapshot).
+fn load_all_tickets(conn: &Connection) -> Result<Vec<crate::integrations::jira::JiraTicket>, String> {
+    let mut stmt = conn
+        .prepare("SELECT key, summary, status, story_points FROM jira_tickets ORDER BY key")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(crate::integrations::jira::JiraTicket {
+                key: row.get::<_, String>(0)?,
+                summary: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                status: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                story_points: row.get::<_, Option<f64>>(3)?,
+                updated: String::new(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }
 
 /// Read the cached daily summary for `day` (empty string when none yet).
@@ -747,6 +761,8 @@ pub async fn transition_issue(
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
     require_jira_creds(&cfg)?;
+    // Capture the current (pre-move) status + summary for the activity log.
+    let (summary, from_status, _) = lookup_jira(&conn, &key);
     integrations::jira::do_transition(
         &cfg.jira_base_url,
         &cfg.jira_email,
@@ -764,6 +780,18 @@ pub async fn transition_issue(
         )
         .map_err(|e| e.to_string())?;
     }
+    // Log the move for the daily QA summary (best-effort; never fails the move).
+    let _ = db::log_qa_activity(
+        &conn,
+        &local_today(),
+        &chrono::Local::now().to_rfc3339(),
+        &key,
+        &summary,
+        "transition",
+        &from_status,
+        to_status.trim(),
+        None,
+    );
     Ok(())
     })
     .await
@@ -827,6 +855,21 @@ pub async fn set_story_points(
         rusqlite::params![points, key],
     )
     .map_err(|e| e.to_string())?;
+    // Log the point set for the daily QA summary (best-effort; skip clears).
+    if points.is_some() {
+        let (summary, _, _) = lookup_jira(&conn, &key);
+        let _ = db::log_qa_activity(
+            &conn,
+            &local_today(),
+            &chrono::Local::now().to_rfc3339(),
+            &key,
+            &summary,
+            "points",
+            "",
+            "",
+            points,
+        );
+    }
     Ok(())
     })
     .await

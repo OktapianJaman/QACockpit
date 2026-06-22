@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS config (
     value TEXT
 );
 
+-- A log of QA actions taken in the app (status moves + point sets), used to
+-- build the daily summary. Jira itself isn't queried for this; we record each
+-- action locally as the user performs it.
+CREATE TABLE IF NOT EXISTS qa_activity (
+    id INTEGER PRIMARY KEY,
+    day TEXT,
+    ts TEXT,
+    ticket_key TEXT,
+    summary TEXT,
+    kind TEXT,          -- 'transition' | 'points'
+    from_status TEXT,
+    to_status TEXT,
+    points REAL
+);
+
 CREATE TABLE IF NOT EXISTS test_cases (
     id INTEGER PRIMARY KEY,
     ticket_key TEXT NOT NULL,
