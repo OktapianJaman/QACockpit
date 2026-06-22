@@ -511,9 +511,11 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
   closeTransitionPicker();
   const target = t.to_status || t.name;
   const current = ticketByKey(key)?.story_points ?? null;
-  // Only ask for the actual point when finishing QA (Passed/Failed). Other
-  // moves just confirm.
-  const isVerdict = /qa\s*passed|qa\s*failed|passed|failed/i.test(target);
+  // Ask for the actual point when finishing a ticket — any pass/fail verdict or
+  // a done/completed status (e.g. "QA Passed", "Pass QA", "QA Failed", "Fail QA",
+  // "Task Done", "Task Completed"). Other moves just confirm. Keyword-based so
+  // word order doesn't matter.
+  const isVerdict = /pass|fail|done|complete/i.test(target);
   let points: number | null = current;
   if (isVerdict) {
     const res = await promptActualPoint(
