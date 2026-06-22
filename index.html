@@ -26,6 +26,7 @@
         <span class="brand">QA Cockpit</span>
       </div>
       <div class="topbar-right">
+        <button id="summary-btn" class="btn" title="Ringkasan kerja harian (AI)">📋 Ringkasan</button>
         <button id="bugwriter-btn" class="btn" title="Tulis bug report pakai AI">🐞 Bug Writer</button>
         <button id="sync-btn" class="btn" title="Tarik data Jira & GitHub">Sync</button>
         <button id="gear-btn" class="btn icon-btn" title="Pengaturan">⚙</button>
@@ -146,6 +147,22 @@
           <button id="confirm-cancel" class="btn">Batal</button>
           <button id="confirm-ok" class="btn primary">Ya, lanjut</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Daily QA summary: AI recap of the workday (activity + tickets) -->
+    <div id="summary-overlay" class="overlay hidden">
+      <div class="sum-panel card">
+        <div class="card-head">
+          <h2>📋 Ringkasan Harian</h2>
+          <button id="sum-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <div class="sum-bar">
+          <span id="sum-day" class="sum-day mono">—</span>
+          <button id="sum-generate" class="btn small primary">✨ Generate ringkasan</button>
+        </div>
+        <div id="sum-body" class="sum-body"></div>
+        <div id="sum-empty" class="sum-empty">Belum ada ringkasan untuk hari ini. Klik “Generate ringkasan”.</div>
       </div>
     </div>
 

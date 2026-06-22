@@ -1091,6 +1091,52 @@ h2 {
   margin: 12px 0;
 }
 
+/* ---------------- Daily summary ---------------- */
+.sum-panel {
+  width: 100%;
+  max-width: 560px;
+  box-shadow: var(--shadow);
+  margin: 0;
+}
+.sum-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sum-day {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.sum-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.sum-body h3,
+.sum-body h4 {
+  font-size: 14px;
+  margin: 14px 0 6px;
+}
+.sum-body ul,
+.sum-body ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.sum-body li {
+  margin: 2px 0;
+}
+.sum-body p {
+  margin: 6px 0;
+}
+.sum-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  text-align: center;
+  padding: 18px 0;
+}
+
 /* ---------------- Bug Writer ---------------- */
 .bw-panel {
   width: 100%;

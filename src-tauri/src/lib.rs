@@ -59,6 +59,7 @@ pub fn run() {
             commands::save_note,
             commands::set_ticket_for_block,
             commands::generate_ai_summary,
+            commands::get_daily_summary,
             commands::get_dashboard,
             commands::today,
             commands::list_models,

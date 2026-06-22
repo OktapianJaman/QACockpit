@@ -588,6 +588,19 @@ pub fn generate_ai_summary(
     Ok(summary)
 }
 
+/// Read the cached daily summary for `day` (empty string when none yet).
+/// Lets the UI show a previously-generated summary without re-calling the AI.
+#[tauri::command]
+pub fn get_daily_summary(
+    state: tauri::State<'_, AppState>,
+    day: String,
+) -> Result<String, String> {
+    let conn = state.conn()?;
+    Ok(db::get_ai_summary(&conn, &day, "daily")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default())
+}
+
 #[tauri::command]
 pub fn get_dashboard(
     state: tauri::State<'_, AppState>,

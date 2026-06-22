@@ -1270,6 +1270,71 @@ async function loadFromJira(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Daily summary
+// ---------------------------------------------------------------------------
+
+// The day (YYYY-MM-DD) the summary overlay is showing.
+let summaryDay = "";
+
+/** Render the summary body (markdown → HTML) or show the empty hint. */
+function renderSummary(body: string): void {
+  const hasBody = body.trim().length > 0;
+  $("sum-body").innerHTML = hasBody ? mdToHtml(body) : "";
+  show($("sum-body"), hasBody);
+  show($("sum-empty"), !hasBody);
+}
+
+async function openSummary(): Promise<void> {
+  show($("summary-overlay"), true);
+  try {
+    summaryDay = await invoke<string>("today");
+  } catch {
+    summaryDay = "";
+  }
+  $("sum-day").textContent = summaryDay || "—";
+  try {
+    const cached = await invoke<string>("get_daily_summary", { day: summaryDay });
+    renderSummary(cached);
+  } catch (e) {
+    renderSummary("");
+    toast(`Gagal muat ringkasan: ${errStr(e)}`, "error");
+  }
+}
+
+function closeSummary(): void {
+  show($("summary-overlay"), false);
+}
+
+async function generateSummary(): Promise<void> {
+  if (!summaryDay) {
+    toast("Tanggal hari ini nggak kebaca.", "error");
+    return;
+  }
+  const btn = $<HTMLButtonElement>("sum-generate");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Generating…";
+  try {
+    const body = await invoke<string>("generate_ai_summary", { day: summaryDay });
+    renderSummary(body);
+  } catch (e) {
+    toast(`Gagal generate ringkasan: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+function wireSummary(): void {
+  $("summary-btn").addEventListener("click", () => void openSummary());
+  $("sum-close").addEventListener("click", closeSummary);
+  $("summary-overlay").addEventListener("click", (e) => {
+    if (e.target === $("summary-overlay")) closeSummary();
+  });
+  $("sum-generate").addEventListener("click", () => void generateSummary());
+}
+
+// ---------------------------------------------------------------------------
 // Bug Writer
 // ---------------------------------------------------------------------------
 
@@ -1603,6 +1668,7 @@ function wireEvents(): void {
   $("tc-add-form").addEventListener("submit", (e) => void addTestCase(e));
 
   wireBugWriter();
+  wireSummary();
 }
 
 async function init(): Promise<void> {
