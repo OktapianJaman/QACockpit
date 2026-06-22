@@ -58,11 +58,7 @@ pub struct AppConfig {
     /// Known repos (comma/newline separated "owner/repo") for the PR repo picker.
     #[serde(default)]
     pub github_repos: String,
-    pub gemma_model: String,
-    /// AI provider: "" or "local" = LM Studio; "gemini" = Google Gemini (cloud).
-    #[serde(default)]
-    pub ai_provider: String,
-    /// API key used when `ai_provider == "gemini"`.
+    /// Google Gemini API key (the only AI provider).
     #[serde(default)]
     pub gemini_api_key: String,
     /// Gemini model id; default applied at use-site when blank.
@@ -88,26 +84,20 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_sprint_scope: get("jira_sprint_scope")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
         github_repos: get("github_repos")?.unwrap_or_default(),
-        gemma_model: get("gemma_model")?.unwrap_or_default(),
-        ai_provider: get("ai_provider")?.unwrap_or_default(),
         gemini_api_key: get("gemini_api_key")?.unwrap_or_default(),
         gemini_model: get("gemini_model")?.unwrap_or_default(),
     })
 }
 
-/// Resolve the configured AI target: Gemini when selected and a key is set,
-/// otherwise the local LM Studio model.
+/// Resolve the Gemini AI target. The model defaults to "gemini-2.5-flash" when
+/// blank; a missing API key surfaces as the graceful AI-unavailable message.
 fn ai_target(cfg: &AppConfig) -> crate::ai::gemma::AiTarget {
-    if cfg.ai_provider == "gemini" && !cfg.gemini_api_key.trim().is_empty() {
-        let model = if cfg.gemini_model.trim().is_empty() {
-            "gemini-2.5-flash"
-        } else {
-            cfg.gemini_model.trim()
-        };
-        crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), model)
+    let model = if cfg.gemini_model.trim().is_empty() {
+        "gemini-2.5-flash"
     } else {
-        crate::ai::gemma::AiTarget::local(&cfg.gemma_model)
-    }
+        cfg.gemini_model.trim()
+    };
+    crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), model)
 }
 
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
@@ -122,8 +112,6 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
     set("github_token", &cfg.github_token)?;
     set("github_repos", &cfg.github_repos)?;
-    set("gemma_model", &cfg.gemma_model)?;
-    set("ai_provider", &cfg.ai_provider)?;
     set("gemini_api_key", &cfg.gemini_api_key)?;
     set("gemini_model", &cfg.gemini_model)?;
     Ok(())
@@ -613,11 +601,6 @@ pub fn get_dashboard(
 #[tauri::command]
 pub fn today() -> Result<String, String> {
     Ok(local_today())
-}
-
-#[tauri::command]
-pub fn list_models() -> Result<Vec<String>, String> {
-    Ok(crate::ai::gemma::list_models())
 }
 
 /// Reject when the three required Jira credentials aren't all present.

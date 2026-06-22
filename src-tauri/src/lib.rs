@@ -62,7 +62,6 @@ pub fn run() {
             commands::get_daily_summary,
             commands::get_dashboard,
             commands::today,
-            commands::list_models,
             commands::list_jira_fields,
             commands::list_jira_projects,
             commands::list_jira_assignees,

@@ -1,8 +1,8 @@
-//! Local Gemma client via LM Studio (OpenAI-compatible API).
+//! Google Gemini client (OpenAI-compatible API).
 //!
 //! Pure request-builder / response-parser / prompt-builders are unit-tested.
 //! The actual HTTP call ([`complete`]) is a thin wrapper that degrades
-//! gracefully (never panics) when LM Studio is not running.
+//! gracefully (never panics) when Gemini cannot be reached.
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -10,12 +10,6 @@ use serde_json::{json, Value};
 use crate::core::fairness::{Assessment, Fairness};
 use crate::core::types::ActivityBlock;
 use crate::integrations::jira::JiraTicket;
-
-/// LM Studio OpenAI-compatible chat endpoint.
-pub const LM_STUDIO_URL: &str = "http://localhost:1234/v1/chat/completions";
-
-/// LM Studio OpenAI-compatible models-list endpoint.
-pub const LM_STUDIO_MODELS_URL: &str = "http://localhost:1234/v1/models";
 
 /// Google Gemini OpenAI-compatible chat endpoint.
 pub const GEMINI_URL: &str =
@@ -26,12 +20,10 @@ const MAX_BLOCKS: usize = 20;
 
 /// Friendly Indonesian message shown when the AI cannot be reached.
 const AI_UNAVAILABLE: &str =
-    "(AI tidak tersedia — cek LM Studio / API key Gemini di Settings)";
+    "(AI tidak tersedia — cek API key Gemini di Settings)";
 
-/// Where to send a chat-completion request: a URL, an optional Bearer token
-/// (`Some` for cloud providers like Gemini, `None` for local LM Studio), and a
-/// model id. Routing all provider differences through this struct lets the
-/// request/response code stay identical (both speak the OpenAI-compatible API).
+/// Where to send a chat-completion request: the Gemini endpoint URL, the Bearer
+/// API key, and a model id. Speaks the OpenAI-compatible chat API.
 #[derive(Debug, Clone)]
 pub struct AiTarget {
     pub url: String,
@@ -40,15 +32,6 @@ pub struct AiTarget {
 }
 
 impl AiTarget {
-    /// Local LM Studio target (no auth).
-    pub fn local(model: &str) -> Self {
-        Self {
-            url: LM_STUDIO_URL.to_string(),
-            api_key: None,
-            model: model.to_string(),
-        }
-    }
-
     /// Google Gemini cloud target (Bearer auth).
     pub fn gemini(api_key: &str, model: &str) -> Self {
         Self {
@@ -82,7 +65,7 @@ pub fn parse_chat_response(json: &str) -> Result<String> {
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        return Err(anyhow!("LM Studio error: {msg}"));
+        return Err(anyhow!("Gemini error: {msg}"));
     }
 
     root.get("choices")
@@ -93,42 +76,6 @@ pub fn parse_chat_response(json: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| anyhow!("response missing choices[0].message.content"))
-}
-
-/// Extract the model ids from an OpenAI-compatible `/v1/models` response
-/// (`data[].id`). Returns an empty list if the shape is unexpected.
-pub fn parse_models(json: &str) -> Result<Vec<String>> {
-    let root: Value = serde_json::from_str(json)?;
-    let ids = root
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| m.get("id").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(ids)
-}
-
-/// Fetch the list of model ids loaded in LM Studio.
-///
-/// Degrades gracefully: returns an empty list (never errors) if LM Studio is
-/// not reachable, so the UI can fall back to manual entry.
-pub fn list_models() -> Vec<String> {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let text = match client.get(LM_STUDIO_MODELS_URL).send().and_then(|r| r.text()) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    parse_models(&text).unwrap_or_default()
 }
 
 /// Build an Indonesian prompt asking Gemma to summarize the workday from
@@ -585,20 +532,6 @@ mod tests {
     #[test]
     fn parse_empty_object_is_err() {
         assert!(parse_chat_response("{}").is_err());
-    }
-
-    #[test]
-    fn parse_models_extracts_ids() {
-        let fixture = r#"{"data":[{"id":"gemma-4-e4b-it","object":"model"},
-                                  {"id":"text-embedding-nomic","object":"model"}],
-                          "object":"list"}"#;
-        let ids = parse_models(fixture).unwrap();
-        assert_eq!(ids, vec!["gemma-4-e4b-it", "text-embedding-nomic"]);
-    }
-
-    #[test]
-    fn parse_models_unexpected_shape_is_empty() {
-        assert!(parse_models("{}").unwrap().is_empty());
     }
 
     fn block(app: &str, title: &str, minutes: i64) -> ActivityBlock {

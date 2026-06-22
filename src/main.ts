@@ -62,8 +62,6 @@ interface AppConfig {
   jira_sprint_scope: string;
   github_token: string;
   github_repos: string;
-  gemma_model: string;
-  ai_provider: string;
   gemini_api_key: string;
   gemini_model: string;
 }
@@ -78,8 +76,6 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_sprint_scope",
   "github_token",
   "github_repos",
-  "gemma_model",
-  "ai_provider",
   "gemini_api_key",
   "gemini_model",
 ];
@@ -803,7 +799,7 @@ async function addTestCase(e: Event): Promise<void> {
   await loadTestCases(detailKey);
 }
 
-/** "✨ Generate pakai AI": draft cases from the ticket summary (slow, local). */
+/** "✨ Generate pakai AI": draft cases from the ticket summary (Gemini). */
 async function generateTestCases(): Promise<void> {
   if (!detailKey) return;
   const key = detailKey;
@@ -811,7 +807,7 @@ async function generateTestCases(): Promise<void> {
   const btn = $<HTMLButtonElement>("tc-generate");
   btn.disabled = true;
   const prev = btn.textContent;
-  btn.textContent = "Lagi bikin test case… (model lokal, agak lama)";
+  btn.textContent = "Lagi bikin test case…";
   try {
     const cases = await invoke<TestCase[]>("generate_test_cases", { key, summary });
     if (detailKey === key) renderTestCases(cases);
@@ -986,7 +982,7 @@ async function generateTestCasesFromAllPrs(btn: HTMLButtonElement): Promise<void
   const summary = ticketByKey(key)?.summary || "";
   btn.disabled = true;
   const prev = btn.textContent;
-  btn.textContent = "Lagi bikin test case dari semua PR… (model lokal, agak lama)";
+  btn.textContent = "Lagi bikin test case dari semua PR…";
   try {
     const prs = linkedPrs.map((p) => ({ repo: p.repo, number: p.number }));
     const cases = await invoke<TestCase[]>("generate_test_cases_from_prs", {
@@ -1007,7 +1003,7 @@ async function generateTestCasesFromAllPrs(btn: HTMLButtonElement): Promise<void
   }
 }
 
-/** Fetch a PR's diff and render the local-model summary / what-to-test. */
+/** Fetch a PR's diff and render the Gemini summary / what-to-test. */
 async function summarizePr(
   pr: PrRef,
   btn: HTMLButtonElement,
@@ -1021,7 +1017,7 @@ async function summarizePr(
   btn.textContent = "Lagi baca PR…";
   panel.classList.remove("hidden");
   panel.classList.add("loading");
-  panel.textContent = "Lagi baca PR & nyusun… (model lokal, agak lama)";
+  panel.textContent = "Lagi baca PR & nyusun…";
   try {
     const review = await invoke<string>("summarize_pr", {
       key,
@@ -1051,7 +1047,7 @@ async function generateTestCasesFromPr(
   const summary = ticketByKey(key)?.summary || "";
   btn.disabled = true;
   const prev = btn.textContent;
-  btn.textContent = "Lagi bikin test case dari PR… (model lokal, agak lama)";
+  btn.textContent = "Lagi bikin test case dari PR…";
   try {
     const cases = await invoke<TestCase[]>("generate_test_cases_from_pr", {
       key,
@@ -1076,32 +1072,10 @@ async function generateTestCasesFromPr(
 // Settings
 // ---------------------------------------------------------------------------
 
-async function populateModelDropdown(current: string): Promise<void> {
-  const sel = $("cfg-gemma_model") as HTMLSelectElement;
-  const hint = $("gemma-hint");
-  let models: string[] = [];
-  try {
-    models = await invoke<string[]>("list_models");
-  } catch {
-    models = [];
-  }
-  // Always keep the saved value selectable even if LM Studio is offline.
-  if (current && !models.includes(current)) models.unshift(current);
-  if (models.length === 0) {
-    sel.innerHTML = `<option value="">(LM Studio tidak terdeteksi)</option>`;
-    hint.textContent = "Nyalakan LM Studio lalu buka Settings lagi untuk memuat daftar model.";
-  } else {
-    sel.innerHTML = models
-      .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`)
-      .join("");
-    hint.textContent = "Daftar model diambil dari LM Studio.";
-  }
-}
-
 // The three Jira selects need their saved value shown even before "Muat dari
 // Jira" is clicked, so saving never loses it. They are excluded from the generic
-// loop (like gemma_model) and seeded by these helpers — an empty <select> must
-// have options before its value can be set.
+// loop and seeded by these helpers — an empty <select> must have options before
+// its value can be set.
 const JIRA_DROPDOWN_KEYS: (keyof AppConfig)[] = [
   "jira_story_point_field",
   "jira_project",
@@ -1137,7 +1111,6 @@ async function openSettings(): Promise<void> {
   try {
     const cfg = await invoke<AppConfig>("get_config");
     for (const k of CONFIG_KEYS) {
-      if (k === "gemma_model") continue; // handled as a dropdown below
       if (JIRA_DROPDOWN_KEYS.includes(k)) continue; // seeded via dedicated helpers
       ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
     }
@@ -1145,7 +1118,6 @@ async function openSettings(): Promise<void> {
     seedProjectDropdown(cfg.jira_project ?? "");
     seedAssigneeDropdown(cfg.jira_assignee ?? "");
     $("jira-fields-hint").textContent = "";
-    await populateModelDropdown(cfg.gemma_model ?? "");
   } catch (e) {
     toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
   }
