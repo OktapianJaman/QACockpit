@@ -331,6 +331,36 @@ pub fn fetch_transitions(
 
 /// Trigger transition `transition_id` on `issue_key` (a WRITE to Jira). Jira
 /// returns 204 No Content on success. Thin HTTP wrapper; not unit-tested.
+/// Consume a Jira response, returning its body text on success or an error that
+/// carries Jira's own message (`errorMessages` / `errors`) instead of a bare
+/// "HTTP 400". Jira puts the real reason (e.g. "Field 'customfield_10016' cannot
+/// be set. It is not on the appropriate screen, or unknown.") in the body, which
+/// `error_for_status()` throws away.
+fn jira_body(resp: reqwest::blocking::Response) -> Result<String> {
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if status.is_success() {
+        return Ok(text);
+    }
+    let msg = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(arr) = v.get("errorMessages").and_then(Value::as_array) {
+                parts.extend(arr.iter().filter_map(|m| m.as_str().map(str::to_string)));
+            }
+            if let Some(obj) = v.get("errors").and_then(Value::as_object) {
+                parts.extend(
+                    obj.iter()
+                        .map(|(k, val)| format!("{k}: {}", val.as_str().unwrap_or(""))),
+                );
+            }
+            (!parts.is_empty()).then(|| parts.join("; "))
+        })
+        .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+    Err(anyhow::anyhow!("{msg}"))
+}
+
 pub fn do_transition(
     base_url: &str,
     email: &str,
@@ -345,13 +375,13 @@ pub fn do_transition(
     );
     let body = serde_json::json!({ "transition": { "id": transition_id } });
     let client = crate::net::client();
-    client
+    let resp = client
         .post(url)
         .basic_auth(email, Some(token))
         .header("Accept", "application/json")
         .json(&body)
-        .send()?
-        .error_for_status()?;
+        .send()?;
+    jira_body(resp)?;
     Ok(())
 }
 
@@ -376,13 +406,15 @@ pub fn update_story_points(
     };
     let body = serde_json::json!({ "fields": { field: value } });
     let client = crate::net::client();
-    client
+    let resp = client
         .put(url)
         .basic_auth(email, Some(token))
         .header("Accept", "application/json")
         .json(&body)
-        .send()?
-        .error_for_status()?;
+        .send()?;
+    jira_body(resp).map_err(|e| {
+        anyhow::anyhow!("field story point '{field}' ditolak Jira ({e}). Cek 'Jira Story Point Field' di Settings.")
+    })?;
     Ok(())
 }
 
@@ -776,14 +808,14 @@ pub fn add_comment(
     );
     let body = serde_json::json!({ "body": body_adf });
     let client = crate::net::client();
-    client
+    let resp = client
         .post(url)
         .basic_auth(email, Some(token))
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
         .json(&body)
-        .send()?
-        .error_for_status()?;
+        .send()?;
+    jira_body(resp)?;
     Ok(())
 }
 
