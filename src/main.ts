@@ -93,6 +93,35 @@ function show(el: HTMLElement, visible: boolean): void {
   el.classList.toggle("hidden", !visible);
 }
 
+// --- Theme (light / dark), persisted in localStorage ---
+type Theme = "dark" | "light";
+const THEME_KEY = "qacockpit-theme";
+
+function applyTheme(theme: Theme): void {
+  document.documentElement.dataset.theme = theme === "light" ? "light" : "";
+  const btn = document.getElementById("theme-btn");
+  if (btn) {
+    // The icon shows the theme you'd switch TO.
+    btn.textContent = theme === "light" ? "🌙" : "☀️";
+    btn.title = theme === "light" ? "Ganti ke gelap" : "Ganti ke terang";
+  }
+}
+
+function currentTheme(): Theme {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function initTheme(): void {
+  const saved = (localStorage.getItem(THEME_KEY) as Theme | null) ?? "dark";
+  applyTheme(saved);
+}
+
+function toggleTheme(): void {
+  const next: Theme = currentTheme() === "light" ? "dark" : "light";
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+}
+
 /** Escape text destined for innerHTML interpolation. */
 function esc(s: string): string {
   return s
@@ -278,9 +307,19 @@ function buildCard(t: BoardTicket): HTMLElement {
 }
 
 /** Build a column for one display status. Header = UPPERCASE name + count/total. */
+/** Map a display column to a stage color class (lane cap + count color). */
+function stageClass(status: string): string {
+  const s = status.toLowerCase();
+  if (/done|passed|closed|complete|resolved|selesai/.test(s)) return "stage-done";
+  if (/fail/.test(s)) return "stage-failed";
+  if (/progress/.test(s)) return "stage-progress";
+  if (/ready/.test(s)) return "stage-ready";
+  return "";
+}
+
 function buildColumn(status: string, cards: BoardTicket[], total: number): HTMLElement {
   const col = document.createElement("section");
-  col.className = "column";
+  col.className = `column ${stageClass(status)}`.trim();
   const head = document.createElement("div");
   head.className = "column-head";
   head.innerHTML = `
@@ -1599,6 +1638,8 @@ function wireEvents(): void {
     if (url) void openUrl(url).catch(() => toast("Gagal buka link.", "error"));
   });
 
+  $("theme-btn").addEventListener("click", toggleTheme);
+
   $("gear-btn").addEventListener("click", () => void openSettings());
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-cancel").addEventListener("click", closeSettings);
@@ -1688,6 +1729,7 @@ function wireEvents(): void {
 }
 
 async function init(): Promise<void> {
+  initTheme();
   wireEvents();
   await refreshBoard();
 }
