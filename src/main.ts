@@ -61,7 +61,6 @@ interface AppConfig {
   jira_assignee: string;
   jira_sprint_scope: string;
   github_token: string;
-  github_repos: string;
   gemini_api_key: string;
 }
 
@@ -74,9 +73,11 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_assignee",
   "jira_sprint_scope",
   "github_token",
-  "github_repos",
   "gemini_api_key",
 ];
+
+/** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */
+const KNOWN_REPOS = ["tr8team/gotradeindoapp", "tr8team/tradecharlieflutter"];
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -548,21 +549,8 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
 let detailKey: string | null = null;
 // PRs linked to the open ticket (a ticket can span repos, e.g. native + flutter).
 let linkedPrs: PrRef[] = [];
-// Known repos (from config) for the PR repo dropdown.
-let knownRepos: string[] = [];
-
-/** Load the configured repo list (comma/newline separated owner/repo). */
-async function loadKnownRepos(): Promise<void> {
-  try {
-    const cfg = await invoke<AppConfig>("get_config");
-    knownRepos = (cfg.github_repos || "")
-      .split(/[,\n]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } catch {
-    knownRepos = [];
-  }
-}
+// Repos for the PR repo dropdown — a fixed, hardcoded list.
+const knownRepos: string[] = [...KNOWN_REPOS];
 
 /** Fill the PR repo dropdown from knownRepos. */
 function populateRepoDropdown(): void {
@@ -1155,7 +1143,6 @@ async function saveSettings(): Promise<void> {
   const cfg = readConfigFromForm();
   try {
     await invoke("set_config", { cfg });
-    await loadKnownRepos(); // repo list may have changed
     toast("Pengaturan tersimpan.");
     closeSettings();
   } catch (e) {
@@ -1602,6 +1589,16 @@ function wireEvents(): void {
     renderBoard(boardTickets);
   });
 
+  // External links (e.g. "where to get a token") open in the system browser,
+  // never inside the app's own webview.
+  document.body.addEventListener("click", (e) => {
+    const link = (e.target as HTMLElement).closest<HTMLElement>(".ext-link");
+    if (!link) return;
+    e.preventDefault();
+    const url = link.dataset.url;
+    if (url) void openUrl(url).catch(() => toast("Gagal buka link.", "error"));
+  });
+
   $("gear-btn").addEventListener("click", () => void openSettings());
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-cancel").addEventListener("click", closeSettings);
@@ -1692,7 +1689,6 @@ function wireEvents(): void {
 
 async function init(): Promise<void> {
   wireEvents();
-  await loadKnownRepos();
   await refreshBoard();
 }
 

@@ -265,6 +265,9 @@
           </label>
           <label>Jira API Token
             <input type="password" id="cfg-jira_token" placeholder="••••••••" />
+            <small class="field-hint">Bikin token di
+              <a class="ext-link" data-url="https://id.atlassian.com/manage-profile/security/api-tokens">id.atlassian.com → Security → API tokens ↗</a>.
+            </small>
           </label>
           <div class="test-row">
             <button type="button" id="jira-test-btn" class="btn small">🔌 Test koneksi</button>
@@ -292,19 +295,26 @@
           </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />
+            <small class="field-hint">Bikin token (scope <code>repo</code>) di
+              <a class="ext-link" data-url="https://github.com/settings/tokens">github.com → Settings → Developer settings → Tokens ↗</a>.
+            </small>
           </label>
           <div class="test-row">
             <button type="button" id="gh-test-btn" class="btn small">🔌 Test koneksi</button>
             <small id="gh-test-status" class="test-status"></small>
           </div>
-          <label>GitHub Repos <span class="opt">(buat dropdown PR)</span>
-            <input type="text" id="cfg-github_repos"
-              placeholder="tr8team/gotradeindoapp, tr8team/tradecharlieflutter" />
-            <small class="field-hint">Pisahkan pakai koma. Nanti tinggal pilih repo + ketik nomor PR.</small>
+          <label>GitHub Repos <span class="opt">(daftar tetap)</span>
+            <select id="github-repos-display">
+              <option>tr8team/gotradeindoapp</option>
+              <option>tr8team/tradecharlieflutter</option>
+            </select>
+            <small class="field-hint">Daftar repo sudah di-set tetap — dipakai di dropdown PR.</small>
           </label>
           <label>Gemini API Key
             <input type="password" id="cfg-gemini_api_key" placeholder="AIza..." autocomplete="off" />
-            <small class="field-hint">AI di app ini pakai Google Gemini. Ambil API key di Google AI Studio.</small>
+            <small class="field-hint">AI di app ini pakai Google Gemini. Ambil API key gratis di
+              <a class="ext-link" data-url="https://aistudio.google.com/apikey">aistudio.google.com/apikey ↗</a>.
+            </small>
           </label>
           <div class="test-row">
             <button type="button" id="gemini-test-btn" class="btn small">🔌 Test koneksi</button>
