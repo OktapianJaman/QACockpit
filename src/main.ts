@@ -232,6 +232,7 @@ function errStr(e: unknown): string {
 const STATUS_ORDER = [
   "to do",
   "ready for qa",
+  "today",
   "qa in progress",
   "in progress",
   "qa passed",
