@@ -209,7 +209,30 @@ h2 {
 
 .board-toolbar {
   display: flex;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 12px;
+}
+
+.board-summary {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.bs-scope {
+  font-weight: 600;
+  color: var(--text);
+}
+.bs-sep {
+  color: var(--text-faint);
+}
+.bs-pts {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .board-search {

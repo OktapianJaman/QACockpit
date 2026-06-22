@@ -417,9 +417,40 @@ async function refreshBoard(): Promise<void> {
   try {
     boardTickets = await invoke<BoardTicket[]>("list_board_tickets");
     renderBoard(boardTickets);
+    await updateBoardSummary();
   } catch (e) {
     toast(`Gagal memuat board: ${errStr(e)}`, "error");
   }
+}
+
+// Sprint-scope labels matching the Settings "Lingkup Sprint" options.
+const SCOPE_LABEL: Record<string, string> = {
+  "": "Semua",
+  active: "Sprint aktif",
+  backlog: "Backlog",
+};
+
+/** Show total tickets + story points for the loaded board, labeled by the
+ *  configured sprint scope (so it reads "Sprint aktif · 12 tiket · 34 pts"). */
+async function updateBoardSummary(): Promise<void> {
+  const el = $("board-summary");
+  if (boardTickets.length === 0) {
+    el.innerHTML = "";
+    return;
+  }
+  let scope = "";
+  try {
+    scope = (await invoke<AppConfig>("get_config")).jira_sprint_scope ?? "";
+  } catch {
+    /* fall back to "Semua" */
+  }
+  const label = SCOPE_LABEL[scope] ?? "Semua";
+  const pts = boardTickets.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
+  const sep = `<span class="bs-sep">·</span>`;
+  el.innerHTML =
+    `<span class="bs-scope">${esc(label)}</span>${sep}` +
+    `${boardTickets.length} tiket${sep}` +
+    `<strong class="bs-pts">${esc(fmtPoints(pts))} pts</strong>`;
 }
 
 // ---------------------------------------------------------------------------
