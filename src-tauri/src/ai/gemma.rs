@@ -15,6 +15,9 @@ use crate::integrations::jira::JiraTicket;
 pub const GEMINI_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
+/// The single Gemini model the app uses (not user-configurable).
+pub const GEMINI_MODEL: &str = "gemini-2.5-flash";
+
 /// Cap on how many activity blocks we list in a summary prompt.
 const MAX_BLOCKS: usize = 20;
 
@@ -341,6 +344,39 @@ fn post_chat(target: &AiTarget, body: Value) -> String {
         Ok(content) => content,
         Err(_) => AI_UNAVAILABLE.to_string(),
     }
+}
+
+/// Probe the AI target with a minimal request, surfacing the real error (bad
+/// key, network, quota) instead of the swallowed [`AI_UNAVAILABLE`]. Used by the
+/// Settings "Test Connection" button.
+pub fn test_connection(target: &AiTarget) -> Result<(), String> {
+    if target.api_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("API key Gemini belum diisi".into());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut req = client.post(&target.url).json(&build_chat_request(&target.model, "ping"));
+    if let Some(key) = &target.api_key {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().map_err(|e| format!("gagal konek ke Gemini: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        let msg = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+        return Err(msg);
+    }
+    parse_chat_response(&text).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Convenience: generate a structured bug report from free-form text and an

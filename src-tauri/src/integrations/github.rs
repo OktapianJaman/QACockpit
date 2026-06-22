@@ -180,6 +180,25 @@ pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
     parse_prs(&body)
 }
 
+/// Verify a GitHub token by fetching the authenticated user; returns the login.
+/// Thin HTTP wrapper; not unit-tested.
+pub fn fetch_user(token: &str) -> Result<String> {
+    let client = reqwest::blocking::Client::new();
+    let body = client
+        .get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "qa-cockpit")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    let v: Value = serde_json::from_str(&body)?;
+    Ok(v.get("login")
+        .and_then(Value::as_str)
+        .unwrap_or("(unknown)")
+        .to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

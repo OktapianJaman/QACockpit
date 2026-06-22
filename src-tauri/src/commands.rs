@@ -58,12 +58,10 @@ pub struct AppConfig {
     /// Known repos (comma/newline separated "owner/repo") for the PR repo picker.
     #[serde(default)]
     pub github_repos: String,
-    /// Google Gemini API key (the only AI provider).
+    /// Google Gemini API key (the only AI provider). The model is hardcoded
+    /// (see [`crate::ai::gemma::GEMINI_MODEL`]) and not user-configurable.
     #[serde(default)]
     pub gemini_api_key: String,
-    /// Gemini model id; default applied at use-site when blank.
-    #[serde(default)]
-    pub gemini_model: String,
 }
 
 const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
@@ -85,19 +83,13 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         github_token: get("github_token")?.unwrap_or_default(),
         github_repos: get("github_repos")?.unwrap_or_default(),
         gemini_api_key: get("gemini_api_key")?.unwrap_or_default(),
-        gemini_model: get("gemini_model")?.unwrap_or_default(),
     })
 }
 
-/// Resolve the Gemini AI target. The model defaults to "gemini-2.5-flash" when
-/// blank; a missing API key surfaces as the graceful AI-unavailable message.
+/// Resolve the Gemini AI target. The model is hardcoded; a missing API key
+/// surfaces as the graceful AI-unavailable message at call time.
 fn ai_target(cfg: &AppConfig) -> crate::ai::gemma::AiTarget {
-    let model = if cfg.gemini_model.trim().is_empty() {
-        "gemini-2.5-flash"
-    } else {
-        cfg.gemini_model.trim()
-    };
-    crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), model)
+    crate::ai::gemma::AiTarget::gemini(cfg.gemini_api_key.trim(), crate::ai::gemma::GEMINI_MODEL)
 }
 
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
@@ -113,7 +105,6 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("github_token", &cfg.github_token)?;
     set("github_repos", &cfg.github_repos)?;
     set("gemini_api_key", &cfg.gemini_api_key)?;
-    set("gemini_model", &cfg.gemini_model)?;
     Ok(())
 }
 
@@ -479,8 +470,39 @@ pub fn set_config(state: tauri::State<'_, AppState>, cfg: AppConfig) -> Result<(
     save_config(&conn, &cfg)
 }
 
+/// Test Jira credentials; returns a success line for the UI. The frontend saves
+/// the form first, so this reads the just-saved config.
 #[tauri::command]
-pub fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
+pub async fn test_jira_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let cfg = load_config(&state.conn()?)?;
+    require_jira_creds(&cfg)?;
+    let name = integrations::jira::fetch_myself(&cfg.jira_base_url, &cfg.jira_email, &cfg.jira_token)
+        .map_err(|e| format!("Gagal konek Jira: {e}"))?;
+    Ok(format!("Terhubung sebagai {name}"))
+}
+
+/// Test the GitHub token; returns the authenticated login.
+#[tauri::command]
+pub async fn test_github_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let cfg = load_config(&state.conn()?)?;
+    if cfg.github_token.trim().is_empty() {
+        return Err("Isi GitHub Token dulu".into());
+    }
+    let login = integrations::github::fetch_user(&cfg.github_token)
+        .map_err(|e| format!("Gagal konek GitHub: {e}"))?;
+    Ok(format!("Terhubung sebagai @{login}"))
+}
+
+/// Test the Gemini API key with a minimal request.
+#[tauri::command]
+pub async fn test_gemini_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let cfg = load_config(&state.conn()?)?;
+    crate::ai::gemma::test_connection(&ai_target(&cfg))?;
+    Ok(format!("Gemini OK ({})", crate::ai::gemma::GEMINI_MODEL))
+}
+
+#[tauri::command]
+pub async fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, String> {
     let conn = state.conn()?;
     let cfg = load_config(&conn)?;
 
@@ -548,7 +570,7 @@ pub fn set_ticket_for_block(
 }
 
 #[tauri::command]
-pub fn generate_ai_summary(
+pub async fn generate_ai_summary(
     state: tauri::State<'_, AppState>,
     day: String,
 ) -> Result<String, String> {
@@ -612,7 +634,7 @@ fn require_jira_creds(cfg: &AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn list_jira_fields(
+pub async fn list_jira_fields(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<integrations::jira::JiraField>, String> {
     let conn = state.conn()?;
@@ -623,7 +645,7 @@ pub fn list_jira_fields(
 }
 
 #[tauri::command]
-pub fn list_jira_projects(
+pub async fn list_jira_projects(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<integrations::jira::JiraProject>, String> {
     let conn = state.conn()?;
@@ -634,7 +656,7 @@ pub fn list_jira_projects(
 }
 
 #[tauri::command]
-pub fn list_jira_assignees(
+pub async fn list_jira_assignees(
     state: tauri::State<'_, AppState>,
     project: String,
 ) -> Result<Vec<integrations::jira::JiraUser>, String> {
@@ -659,7 +681,7 @@ pub fn list_jira_assignees(
 /// List the workflow transitions available for a Jira issue (e.g. To Do →
 /// In Progress → Done). Read-only.
 #[tauri::command]
-pub fn list_transitions(
+pub async fn list_transitions(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<Vec<integrations::jira::JiraTransition>, String> {
@@ -679,7 +701,7 @@ pub fn list_transitions(
 /// Jira — the frontend gates it behind a confirmation dialog. After success the
 /// frontend re-syncs, so this command does not re-sync itself.
 #[tauri::command]
-pub fn transition_issue(
+pub async fn transition_issue(
     state: tauri::State<'_, AppState>,
     key: String,
     transition_id: String,
@@ -743,7 +765,7 @@ pub fn list_board_tickets(
 }
 
 #[tauri::command]
-pub fn set_story_points(
+pub async fn set_story_points(
     state: tauri::State<'_, AppState>,
     key: String,
     points: Option<f64>,
@@ -838,7 +860,7 @@ pub fn delete_test_case(
 /// Ask the local model to draft test cases for a ticket, persist each, and
 /// return the freshly-listed cases for the ticket.
 #[tauri::command]
-pub fn generate_test_cases(
+pub async fn generate_test_cases(
     state: tauri::State<'_, AppState>,
     key: String,
     summary: String,
@@ -859,7 +881,7 @@ pub fn generate_test_cases(
 /// Fetch a PR's diff, ask the local model to draft test cases FROM the code
 /// change, persist each, and return the freshly-listed cases for the ticket.
 #[tauri::command]
-pub fn generate_test_cases_from_pr(
+pub async fn generate_test_cases_from_pr(
     state: tauri::State<'_, AppState>,
     key: String,
     summary: String,
@@ -897,7 +919,7 @@ pub struct PrInput {
 /// e.g. a native repo + a Flutter repo). Diffs are concatenated with a header
 /// per PR; the prompt builder truncates the combined text to its budget.
 #[tauri::command]
-pub fn generate_test_cases_from_prs(
+pub async fn generate_test_cases_from_prs(
     state: tauri::State<'_, AppState>,
     key: String,
     summary: String,
@@ -942,7 +964,7 @@ pub struct BugReport {
 /// screenshot (base64, bare or `data:` URL). The result is returned for the user
 /// to review/edit before it is pushed to Jira via [`create_jira_bug`].
 #[tauri::command]
-pub fn generate_bug_report(
+pub async fn generate_bug_report(
     state: tauri::State<'_, AppState>,
     text: String,
     image_base64: Option<String>,
@@ -978,7 +1000,7 @@ pub fn generate_bug_report(
 /// Create a Bug issue in Jira from a (reviewed) report and optionally attach the
 /// screenshot. Returns the new issue key + browse URL.
 #[tauri::command]
-pub fn create_jira_bug(
+pub async fn create_jira_bug(
     state: tauri::State<'_, AppState>,
     project_key: String,
     summary: String,
@@ -1043,7 +1065,7 @@ pub fn create_jira_bug(
 /// Send the ticket's test results to Jira as a comment with an ADF table.
 /// Returns the summary line so the UI can toast it.
 #[tauri::command]
-pub fn post_test_results(
+pub async fn post_test_results(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<String, String> {
@@ -1132,7 +1154,7 @@ pub fn list_ticket_prs(
 
 /// Fetch a PR's diff and ask the local model to summarize it + "what to test".
 #[tauri::command]
-pub fn summarize_pr(
+pub async fn summarize_pr(
     state: tauri::State<'_, AppState>,
     key: String,
     summary: String,

@@ -741,6 +741,25 @@ pub fn upload_attachment(
     Ok(())
 }
 
+/// Verify Jira credentials by fetching the current user; returns the display
+/// name. Thin HTTP wrapper; not unit-tested.
+pub fn fetch_myself(base_url: &str, email: &str, token: &str) -> Result<String> {
+    let url = format!("{}/rest/api/3/myself", base_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::new();
+    let body = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    let v: Value = serde_json::from_str(&body)?;
+    Ok(v.get("displayName")
+        .and_then(Value::as_str)
+        .unwrap_or("(unknown)")
+        .to_string())
+}
+
 /// Add a comment to a Jira issue (a WRITE to Jira). `body_adf` is the ADF doc
 /// node. Thin HTTP wrapper; not unit-tested.
 pub fn add_comment(

@@ -63,7 +63,6 @@ interface AppConfig {
   github_token: string;
   github_repos: string;
   gemini_api_key: string;
-  gemini_model: string;
 }
 
 const CONFIG_KEYS: (keyof AppConfig)[] = [
@@ -77,7 +76,6 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "github_token",
   "github_repos",
   "gemini_api_key",
-  "gemini_model",
 ];
 
 // ---------------------------------------------------------------------------
@@ -386,6 +384,7 @@ async function refreshBoard(): Promise<void> {
 async function doSync(): Promise<void> {
   const btn = $<HTMLButtonElement>("sync-btn");
   btn.disabled = true;
+  btn.classList.add("busy");
   btn.textContent = "Sync…";
   try {
     const res = await invoke<{ tickets: number; prs: number }>("sync_now");
@@ -395,6 +394,7 @@ async function doSync(): Promise<void> {
     toast(`Sync gagal: ${errStr(e)}`, "error");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
     btn.textContent = "Sync";
   }
 }
@@ -806,6 +806,7 @@ async function generateTestCases(): Promise<void> {
   const summary = ticketByKey(key)?.summary || "";
   const btn = $<HTMLButtonElement>("tc-generate");
   btn.disabled = true;
+  btn.classList.add("busy");
   const prev = btn.textContent;
   btn.textContent = "Lagi bikin test case…";
   try {
@@ -816,6 +817,7 @@ async function generateTestCases(): Promise<void> {
     toast(`Gagal generate: ${errStr(e)}`, "error");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
     btn.textContent = prev;
   }
 }
@@ -1285,6 +1287,7 @@ async function generateSummary(): Promise<void> {
   const btn = $<HTMLButtonElement>("sum-generate");
   const prev = btn.textContent;
   btn.disabled = true;
+  btn.classList.add("busy");
   btn.textContent = "Generating…";
   try {
     const body = await invoke<string>("generate_ai_summary", { day: summaryDay });
@@ -1293,6 +1296,7 @@ async function generateSummary(): Promise<void> {
     toast(`Gagal generate ringkasan: ${errStr(e)}`, "error");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
     btn.textContent = prev;
   }
 }
@@ -1433,6 +1437,7 @@ async function generateBug(): Promise<void> {
   const btn = $<HTMLButtonElement>("bw-generate");
   const prev = btn.textContent;
   btn.disabled = true;
+  btn.classList.add("busy");
   btn.textContent = "Generating…";
   try {
     const report = await invoke<BugReport>("generate_bug_report", {
@@ -1449,6 +1454,7 @@ async function generateBug(): Promise<void> {
     toast(`Gagal generate: ${errStr(e)}`, "error");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
     btn.textContent = prev;
   }
 }
@@ -1470,6 +1476,7 @@ async function createBug(): Promise<void> {
   const btn = $<HTMLButtonElement>("bw-create");
   const prev = btn.textContent;
   btn.disabled = true;
+  btn.classList.add("busy");
   btn.textContent = "Mengirim…";
   try {
     const issue = await invoke<CreatedIssue>("create_jira_bug", {
@@ -1489,6 +1496,7 @@ async function createBug(): Promise<void> {
     toast(`Gagal buat bug: ${errStr(e)}`, "error");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
     btn.textContent = prev;
   }
 }
@@ -1553,6 +1561,36 @@ function wireBugWriter(): void {
   });
 }
 
+/** Save the current form, then run a connection-test command and show the
+ *  result inline. Used by the Jira / GitHub / Gemini "Test koneksi" buttons. */
+async function runTest(btnId: string, statusId: string, command: string): Promise<void> {
+  const btn = $<HTMLButtonElement>(btnId);
+  const status = $(statusId);
+  status.className = "test-status";
+  try {
+    // Test the values currently entered, not just the last-saved ones.
+    await invoke("set_config", { cfg: readConfigFromForm() });
+  } catch (e) {
+    status.textContent = `✗ Gagal simpan: ${errStr(e)}`;
+    status.className = "test-status err";
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add("busy");
+  status.textContent = "Mengetes…";
+  try {
+    const msg = await invoke<string>(command);
+    status.textContent = `✓ ${msg}`;
+    status.className = "test-status ok";
+  } catch (e) {
+    status.textContent = `✗ ${errStr(e)}`;
+    status.className = "test-status err";
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
@@ -1576,6 +1614,15 @@ function wireEvents(): void {
   });
 
   $("jira-load-btn").addEventListener("click", () => void loadFromJira());
+  $("jira-test-btn").addEventListener("click", () =>
+    void runTest("jira-test-btn", "jira-test-status", "test_jira_connection")
+  );
+  $("gh-test-btn").addEventListener("click", () =>
+    void runTest("gh-test-btn", "gh-test-status", "test_github_connection")
+  );
+  $("gemini-test-btn").addEventListener("click", () =>
+    void runTest("gemini-test-btn", "gemini-test-status", "test_gemini_connection")
+  );
   // When the project changes, reload assignees scoped to it (keep current pick).
   $("cfg-jira_project").addEventListener("change", () => {
     const project = ($("cfg-jira_project") as HTMLSelectElement).value;

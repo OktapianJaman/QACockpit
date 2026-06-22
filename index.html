@@ -266,10 +266,12 @@
           <label>Jira API Token
             <input type="password" id="cfg-jira_token" placeholder="••••••••" />
           </label>
-          <div class="jira-load-row">
+          <div class="test-row">
+            <button type="button" id="jira-test-btn" class="btn small">🔌 Test koneksi</button>
             <button type="button" id="jira-load-btn" class="btn small">Muat dari Jira</button>
-            <small class="field-hint">Isi Base URL, Email &amp; API Token dulu, lalu klik untuk memuat pilihan.</small>
+            <small id="jira-test-status" class="test-status"></small>
           </div>
+          <small class="field-hint">Isi Base URL, Email &amp; API Token dulu, lalu test / muat pilihan.</small>
           <label>Jira Story Point Field
             <select id="cfg-jira_story_point_field"></select>
             <small id="jira-fields-hint" class="field-hint"></small>
@@ -291,6 +293,10 @@
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />
           </label>
+          <div class="test-row">
+            <button type="button" id="gh-test-btn" class="btn small">🔌 Test koneksi</button>
+            <small id="gh-test-status" class="test-status"></small>
+          </div>
           <label>GitHub Repos <span class="opt">(buat dropdown PR)</span>
             <input type="text" id="cfg-github_repos"
               placeholder="tr8team/gotradeindoapp, tr8team/tradecharlieflutter" />
@@ -300,9 +306,13 @@
             <input type="password" id="cfg-gemini_api_key" placeholder="AIza..." autocomplete="off" />
             <small class="field-hint">AI di app ini pakai Google Gemini. Ambil API key di Google AI Studio.</small>
           </label>
+          <div class="test-row">
+            <button type="button" id="gemini-test-btn" class="btn small">🔌 Test koneksi</button>
+            <small id="gemini-test-status" class="test-status"></small>
+          </div>
           <label>Gemini Model
-            <input type="text" id="cfg-gemini_model" placeholder="gemini-2.5-flash" />
-            <small class="field-hint">Kosongkan untuk default: gemini-2.5-flash.</small>
+            <input type="text" id="gemini-model-display" value="gemini-2.5-flash" readonly disabled />
+            <small class="field-hint">Model di-set tetap ke gemini-2.5-flash (tidak bisa diubah).</small>
           </label>
           <div class="settings-actions">
             <button type="button" id="settings-cancel" class="btn">Batal</button>

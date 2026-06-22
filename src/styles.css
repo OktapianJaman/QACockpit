@@ -1091,6 +1091,47 @@ h2 {
   margin: 12px 0;
 }
 
+/* ---------------- Busy spinner ---------------- */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.btn.busy::after {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-left: 7px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* ---------------- Settings: test connection ---------------- */
+.test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.test-status {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.test-status.ok {
+  color: var(--green);
+}
+.test-status.err {
+  color: var(--red);
+}
+#gemini-model-display:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
 /* ---------------- Daily summary ---------------- */
 .sum-panel {
   width: 100%;
