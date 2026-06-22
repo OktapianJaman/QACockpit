@@ -1288,6 +1288,12 @@ fn build_and_create_story(
         row.pr_number.trim()
     );
 
+    // Squad: copy from source; default to Quality Assurance Team (QAT) when no source.
+    let squad_value = source
+        .as_ref()
+        .and_then(|s| s.squad.clone())
+        .unwrap_or_else(|| serde_json::json!({ "key": "QAT" }));
+
     let body = integrations::jira::build_story_body(&integrations::jira::StoryFields {
         project_key: project,
         issue_type_id: story_type_id,
@@ -1296,7 +1302,7 @@ fn build_and_create_story(
         sprint_id,
         reporter_id,
         assignee_id: assignee_id.as_deref(),
-        squad: source.as_ref().and_then(|s| s.squad.as_ref()),
+        squad: Some(&squad_value),
         developer_id: source.as_ref().and_then(|s| s.developer.as_deref()),
         ac_adf: &ac_adf,
     });
