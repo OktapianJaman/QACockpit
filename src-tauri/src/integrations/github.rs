@@ -199,9 +199,70 @@ pub fn fetch_user(token: &str) -> Result<String> {
         .to_string())
 }
 
+/// Extract `(OWNER/REPO, number)` from a GitHub PR url.
+pub fn parse_pr_url(url: &str) -> Option<(String, i64)> {
+    let rest = url.split("github.com/").nth(1)?;
+    let mut parts = rest.trim_end_matches('/').split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    let pull = parts.next()?; // "pull"
+    if pull != "pull" {
+        return None;
+    }
+    let number: i64 = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((format!("{owner}/{repo}"), number))
+}
+
+/// Parse a GitHub `GET /repos/{repo}/pulls/{n}` response into `(title, body)`.
+pub fn parse_pr_detail(json: &str) -> Result<(String, String)> {
+    let v: Value = serde_json::from_str(json)?;
+    let title = v.get("title").and_then(Value::as_str).unwrap_or_default().to_string();
+    let body = v.get("body").and_then(Value::as_str).unwrap_or_default().to_string();
+    Ok((title, body))
+}
+
+/// Fetch a PR's title + body. Thin HTTP wrapper; not unit-tested.
+pub fn fetch_pr_detail(token: &str, repo: &str, number: i64) -> Result<(String, String)> {
+    let client = crate::net::client();
+    let body = client
+        .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "qa-cockpit")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    parse_pr_detail(&body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_pr_url_extracts_repo_and_number() {
+        assert_eq!(
+            parse_pr_url("https://github.com/tr8team/tradecharlieflutter/pull/3197"),
+            Some(("tr8team/tradecharlieflutter".to_string(), 3197))
+        );
+        assert_eq!(
+            parse_pr_url("https://github.com/o/r/pull/12?diff=split"),
+            Some(("o/r".to_string(), 12))
+        );
+        assert_eq!(parse_pr_url("https://github.com/o/r/issues/5"), None);
+        assert_eq!(parse_pr_url("not a url"), None);
+    }
+
+    #[test]
+    fn parse_pr_detail_reads_title_and_body() {
+        let json = r#"{"title":"feat: x","body":"does x","number":3200}"#;
+        let (t, b) = parse_pr_detail(json).unwrap();
+        assert_eq!(t, "feat: x");
+        assert_eq!(b, "does x");
+    }
 
     // Captured fixture mimicking a GitHub /search/issues response (type:pr).
     // Two items in different repos to exercise the `repo` derivation.

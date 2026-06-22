@@ -403,6 +403,82 @@ fn post_chat(target: &AiTarget, body: Value) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ticket Builder prompts
+// ---------------------------------------------------------------------------
+
+/// Prompt Gemini to parse a free-form QA ticket blob into structured JSON rows.
+pub fn parse_ticket_rows_prompt(blob: &str) -> String {
+    format!(
+        "You parse a QA engineer's free-form list of pull requests into JSON. The text \
+         may be in any format. Extract the Epic key, the app label, and one row per PR.\n\n\
+         Return ONLY valid JSON (no prose, no code fences) in EXACTLY this shape:\n\
+         {{\n\
+         \x20 \"epic\": \"<epic key like QAT-3423, or empty>\",\n\
+         \x20 \"app\": \"<short app label like GTG, or empty>\",\n\
+         \x20 \"rows\": [\n\
+         \x20\x20 {{\n\
+         \x20\x20\x20 \"source_ticket\": \"<linked Jira key like USSTOCK-2835, or empty>\",\n\
+         \x20\x20\x20 \"title\": \"<the change title>\",\n\
+         \x20\x20\x20 \"pr_number\": \"<github PR number, digits only>\",\n\
+         \x20\x20\x20 \"pr_url\": \"<full github PR url>\",\n\
+         \x20\x20\x20 \"assignee\": \"<person name from the @mention>\"\n\
+         \x20\x20 }}\n\
+         \x20 ]\n\
+         }}\n\n\
+         Rules:\n\
+         - One row per PR line. Keep the original title text.\n\
+         - source_ticket only if a Jira ticket is explicitly linked; else empty string.\n\
+         - assignee is the name in the @mention (e.g. \"Reva Anggada (Reva)\").\n\
+         - Ignore instruction lines like \"assign the created ticket ...\".\n\n\
+         Input:\n{blob}"
+    )
+}
+
+/// Extract a JSON object/array from a model reply that may wrap it in code
+/// fences or prose. Returns the substring from the first `{`/`[` to the matching
+/// last `}`/`]`; falls back to the trimmed input.
+pub fn extract_json(raw: &str) -> &str {
+    let t = raw.trim();
+    let t = t
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let start = t.find(['{', '[']);
+    let end = t.rfind(['}', ']']);
+    match (start, end) {
+        (Some(s), Some(e)) if e >= s => &t[s..=e],
+        _ => t,
+    }
+}
+
+/// Prompt Gemini to draft acceptance criteria for a PR (used when there is no
+/// source ticket). Asks for a short numbered list, one criterion per line.
+pub fn generate_ac_prompt(pr_title: &str, pr_body: &str, pr_number: &str) -> String {
+    let body = if pr_body.chars().count() > 4000 {
+        pr_body.chars().take(4000).collect::<String>()
+    } else {
+        pr_body.to_string()
+    };
+    format!(
+        "You are a QA engineer. Write concise QA acceptance criteria for the following \
+         GitHub pull request (PR #{pr_number}). Output ONLY a numbered list, one acceptance \
+         criterion per line (e.g. \"1. ...\"), 3 to 6 items, in English. No preamble.\n\n\
+         PR title: {pr_title}\n\
+         PR description:\n{body}"
+    )
+}
+
+/// Split a model's numbered acceptance-criteria reply into clean lines (drops
+/// leading numbering / bullets). Reuses [`strip_leading_marker`].
+pub fn parse_ac_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(|l| strip_leading_marker(l.trim()).to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
 /// Probe the AI target with a minimal request, surfacing the real error (bad
 /// key, network, quota) instead of the swallowed [`AI_UNAVAILABLE`]. Used by the
 /// Settings "Test Connection" button.
@@ -643,6 +719,31 @@ mod tests {
             story_points: Some(3.0),
             updated: "2026-06-19".to_string(),
         }
+    }
+
+    #[test]
+    fn ticket_rows_prompt_embeds_blob_and_asks_json() {
+        let blob = "Epic: QAT-3423\nUAT GTG\nSocial #3197 @Reva";
+        let p = parse_ticket_rows_prompt(blob);
+        assert!(p.contains("QAT-3423"));
+        assert!(p.contains("JSON"));
+        assert!(p.contains("rows"));
+    }
+
+    #[test]
+    fn extract_json_strips_code_fences() {
+        assert_eq!(extract_json("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+        assert_eq!(extract_json("{\"a\":1}"), "{\"a\":1}");
+        // Leading prose before the object is dropped.
+        assert_eq!(extract_json("Here:\n{\"a\":1}"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn generate_ac_prompt_contains_title_and_pr() {
+        let p = generate_ac_prompt("feat(ipo): surface IPO stocks", "adds IPO to search", "3200");
+        assert!(p.contains("feat(ipo)"));
+        assert!(p.contains("3200"));
+        assert!(p.contains("acceptance criteria") || p.contains("Acceptance Criteria"));
     }
 
     #[test]

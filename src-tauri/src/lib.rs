@@ -89,6 +89,8 @@ pub fn run() {
             commands::post_test_results,
             commands::generate_bug_report,
             commands::create_jira_bug,
+            commands::parse_ticket_blob,
+            commands::create_story_tickets,
             commands::list_ticket_prs,
             commands::summarize_pr,
         ])

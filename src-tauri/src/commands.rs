@@ -1156,6 +1156,250 @@ pub async fn create_jira_bug(
     .await
 }
 
+// ---------------------------------------------------------------------------
+// Ticket Builder (bulk Story creation under an epic)
+// ---------------------------------------------------------------------------
+
+/// One parsed row from the pasted blob (editable in the UI before creating).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuilderRow {
+    #[serde(default)]
+    pub source_ticket: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub pr_number: String,
+    #[serde(default)]
+    pub pr_url: String,
+    #[serde(default)]
+    pub assignee: String,
+}
+
+/// The AI-parsed blob: epic + app label + rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedBlob {
+    #[serde(default)]
+    pub epic: String,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub rows: Vec<BuilderRow>,
+}
+
+/// Parse a free-form ticket blob into structured rows via Gemini. The UI shows
+/// these in an editable table for review before creating.
+#[tauri::command]
+pub async fn parse_ticket_blob(
+    state: tauri::State<'_, AppState>,
+    blob: String,
+) -> Result<ParsedBlob, String> {
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        if blob.trim().is_empty() {
+            return Err("Tempel daftar PR-nya dulu".into());
+        }
+        let raw = crate::ai::gemma::complete(
+            &ai_target(&cfg),
+            &crate::ai::gemma::parse_ticket_rows_prompt(&blob),
+        );
+        let json = crate::ai::gemma::extract_json(&raw);
+        serde_json::from_str::<ParsedBlob>(json)
+            .map_err(|e| format!("AI gagal mem-parse daftar (cek API key Gemini): {e}"))
+    })
+    .await
+}
+
+/// The outcome of creating one Story (per-row; failures don't stop the rest).
+#[derive(Debug, Serialize)]
+pub struct StoryResult {
+    pub title: String,
+    pub key: Option<String>,
+    pub url: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Create one Story from a row. Returns the created issue or a per-row error.
+fn build_and_create_story(
+    cfg: &AppConfig,
+    project: &str,
+    epic: &str,
+    app: &str,
+    story_type_id: &str,
+    sprint_id: Option<i64>,
+    reporter_id: Option<&str>,
+    row: &BuilderRow,
+) -> Result<integrations::jira::CreatedIssue, String> {
+    let base = &cfg.jira_base_url;
+    let email = &cfg.jira_email;
+    let token = &cfg.jira_token;
+    let m = |e: anyhow::Error| e.to_string();
+
+    if row.pr_number.trim().is_empty() && row.title.trim().is_empty() {
+        return Err("baris kosong".into());
+    }
+
+    let assignee_id = integrations::jira::resolve_user(base, email, token, project, &row.assignee)
+        .map_err(m)
+        .unwrap_or(None);
+
+    let src_key = row.source_ticket.trim();
+    let source = if src_key.is_empty() {
+        None
+    } else {
+        integrations::jira::fetch_source_ticket(base, email, token, src_key).ok()
+    };
+    let source_summary = source.as_ref().map(|s| s.summary.clone());
+
+    // Acceptance Criteria: copy the source AC verbatim, else generate from the PR.
+    let ac_adf = if let Some(s) = source.as_ref().filter(|s| s.ac_adf.is_some()) {
+        integrations::jira::build_ac_adf(
+            Some(src_key),
+            source_summary.as_deref(),
+            s.ac_adf.as_ref(),
+            base,
+            &row.pr_url,
+            &row.pr_number,
+            &[],
+        )
+    } else {
+        let generated = generate_ac_from_pr(cfg, &row.pr_url, &row.pr_number);
+        let key = if src_key.is_empty() { None } else { Some(src_key) };
+        integrations::jira::build_ac_adf(
+            key,
+            source_summary.as_deref(),
+            None,
+            base,
+            &row.pr_url,
+            &row.pr_number,
+            &generated,
+        )
+    };
+
+    let prefix = if src_key.is_empty() {
+        String::new()
+    } else {
+        format!("[{src_key}] ")
+    };
+    let summary = format!(
+        "[UAT] [{}] {}{} #{}",
+        app.trim(),
+        prefix,
+        row.title.trim(),
+        row.pr_number.trim()
+    );
+
+    let body = integrations::jira::build_story_body(&integrations::jira::StoryFields {
+        project_key: project,
+        issue_type_id: story_type_id,
+        summary: &summary,
+        epic_key: epic.trim(),
+        sprint_id,
+        reporter_id,
+        assignee_id: assignee_id.as_deref(),
+        squad: source.as_ref().and_then(|s| s.squad.as_ref()),
+        developer_id: source.as_ref().and_then(|s| s.developer.as_deref()),
+        ac_adf: &ac_adf,
+    });
+    integrations::jira::create_issue_raw(base, email, token, &body).map_err(m)
+}
+
+/// Generate AC lines from a PR's title/body via Gemini (empty when no GitHub
+/// token or the PR can't be fetched).
+fn generate_ac_from_pr(cfg: &AppConfig, pr_url: &str, pr_number: &str) -> Vec<String> {
+    if cfg.github_token.trim().is_empty() {
+        return Vec::new();
+    }
+    let Some((repo, number)) = integrations::github::parse_pr_url(pr_url) else {
+        return Vec::new();
+    };
+    let Ok((title, body)) = integrations::github::fetch_pr_detail(&cfg.github_token, &repo, number)
+    else {
+        return Vec::new();
+    };
+    let raw = crate::ai::gemma::complete(
+        &ai_target(cfg),
+        &crate::ai::gemma::generate_ac_prompt(&title, &body, pr_number),
+    );
+    crate::ai::gemma::parse_ac_lines(&raw)
+}
+
+/// Create QAT Story tickets under `epic` from the (reviewed) rows. Resolves the
+/// Story type, active sprint, and reporter once, then creates each row;
+/// per-row failures are reported but don't stop the batch.
+#[tauri::command]
+pub async fn create_story_tickets(
+    state: tauri::State<'_, AppState>,
+    epic: String,
+    app: String,
+    rows: Vec<BuilderRow>,
+) -> Result<Vec<StoryResult>, String> {
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        require_jira_creds(&cfg)?;
+        if epic.trim().is_empty() {
+            return Err("Isi Epic key dulu".into());
+        }
+        if rows.is_empty() {
+            return Err("Belum ada baris buat dibuat".into());
+        }
+        let project = epic.split('-').next().unwrap_or("QAT").to_string();
+        let story_type_id = integrations::jira::find_issue_type(
+            &cfg.jira_base_url,
+            &cfg.jira_email,
+            &cfg.jira_token,
+            &project,
+            "Story",
+        )
+        .map_err(|e| e.to_string())?;
+        // Sprint + reporter are best-effort (omitted if not resolvable).
+        let sprint_id = integrations::jira::fetch_active_sprint_id(
+            &cfg.jira_base_url,
+            &cfg.jira_email,
+            &cfg.jira_token,
+            &project,
+        )
+        .ok();
+        let reporter_id = integrations::jira::resolve_user(
+            &cfg.jira_base_url,
+            &cfg.jira_email,
+            &cfg.jira_token,
+            &project,
+            "Theo",
+        )
+        .ok()
+        .flatten();
+
+        let mut results = Vec::with_capacity(rows.len());
+        for row in &rows {
+            match build_and_create_story(
+                &cfg,
+                &project,
+                &epic,
+                &app,
+                &story_type_id,
+                sprint_id,
+                reporter_id.as_deref(),
+                row,
+            ) {
+                Ok(ci) => results.push(StoryResult {
+                    title: row.title.clone(),
+                    key: Some(ci.key),
+                    url: Some(ci.url),
+                    error: None,
+                }),
+                Err(e) => results.push(StoryResult {
+                    title: row.title.clone(),
+                    key: None,
+                    url: None,
+                    error: Some(e),
+                }),
+            }
+        }
+        Ok(results)
+    })
+    .await
+}
+
 /// Send the ticket's test results to Jira as a comment with an ADF table.
 /// Returns the summary line so the UI can toast it.
 #[tauri::command]

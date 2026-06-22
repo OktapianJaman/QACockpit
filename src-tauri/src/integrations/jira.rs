@@ -732,6 +732,35 @@ pub fn create_issue(
     Ok(CreatedIssue { key, url })
 }
 
+/// Create an issue from a pre-built `{ "fields": {...} }` body (a WRITE to Jira).
+/// Returns the new key + browse URL, surfacing Jira's real error on failure.
+/// Thin HTTP wrapper; not unit-tested.
+pub fn create_issue_raw(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    body: &Value,
+) -> Result<CreatedIssue> {
+    let base = base_url.trim_end_matches('/');
+    let client = crate::net::client();
+    let resp = client
+        .post(format!("{base}/rest/api/3/issue"))
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(body)
+        .send()?;
+    let text = jira_body(resp)?;
+    let parsed: Value = serde_json::from_str(&text)?;
+    let key = parsed
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Jira tidak mengembalikan key issue"))?
+        .to_string();
+    let url = format!("{base}/browse/{key}");
+    Ok(CreatedIssue { key, url })
+}
+
 /// Upload a base64 image as an attachment on an existing issue (a WRITE to Jira).
 /// Accepts a bare base64 string or a `data:` URL. Thin HTTP wrapper; not unit-tested.
 pub fn upload_attachment(
@@ -771,6 +800,268 @@ pub fn upload_attachment(
         .send()?
         .error_for_status()?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Ticket Builder: ADF + create-Story body
+// ---------------------------------------------------------------------------
+
+/// Build the Acceptance-Criteria ADF for a Story: a "Source Ticket" section, a
+/// "GitHub PR" section, a divider, then "Acceptance Criteria" — the source AC
+/// spliced verbatim when present, otherwise a generated numbered list.
+#[allow(clippy::too_many_arguments)]
+pub fn build_ac_adf(
+    source_key: Option<&str>,
+    source_summary: Option<&str>,
+    source_ac: Option<&Value>,
+    base_url: &str,
+    pr_url: &str,
+    pr_number: &str,
+    generated: &[String],
+) -> Value {
+    let base = base_url.trim_end_matches('/');
+    let heading = |text: &str| {
+        serde_json::json!({
+            "type": "heading", "attrs": { "level": 2 },
+            "content": [{ "type": "text", "text": text }]
+        })
+    };
+    let para_text = |text: &str| {
+        serde_json::json!({ "type": "paragraph", "content": [{ "type": "text", "text": text }] })
+    };
+    let para_em = |text: &str| {
+        serde_json::json!({
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": text, "marks": [{ "type": "em" }] }]
+        })
+    };
+    let link_para = |label: &str, href: &str| {
+        serde_json::json!({
+            "type": "paragraph",
+            "content": [{
+                "type": "text", "text": label,
+                "marks": [{ "type": "link", "attrs": { "href": href } }]
+            }]
+        })
+    };
+
+    let mut content: Vec<Value> = Vec::new();
+
+    // Source Ticket
+    content.push(heading("Source Ticket"));
+    match (source_key, source_summary) {
+        (Some(key), summary) => {
+            let label = match summary {
+                Some(s) if !s.is_empty() => format!("{key} - {s}"),
+                _ => key.to_string(),
+            };
+            content.push(serde_json::json!({
+                "type": "bulletList",
+                "content": [{
+                    "type": "listItem",
+                    "content": [ link_para(&label, &format!("{base}/browse/{key}")) ]
+                }]
+            }));
+        }
+        _ => content.push(para_em("No source ticket - this PR has no linked Jira ticket.")),
+    }
+
+    // GitHub PR
+    content.push(heading("GitHub PR"));
+    content.push(link_para(pr_url, pr_url));
+
+    // Divider + Acceptance Criteria
+    content.push(serde_json::json!({ "type": "rule" }));
+    content.push(heading("Acceptance Criteria"));
+    match source_ac {
+        Some(ac) => {
+            if let Some(nodes) = ac.get("content").and_then(Value::as_array) {
+                content.extend(nodes.iter().cloned()); // splice source AC verbatim
+            }
+        }
+        None => {
+            content.push(para_em(&format!("Based on PR #{pr_number} description:")));
+            let items: Vec<Value> = generated
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    serde_json::json!({ "type": "listItem", "content": [ para_text(l) ] })
+                })
+                .collect();
+            content.push(serde_json::json!({ "type": "orderedList", "content": items }));
+        }
+    }
+
+    serde_json::json!({ "type": "doc", "version": 1, "content": content })
+}
+
+/// All fields needed to create a QAT Story via [`build_story_body`].
+pub struct StoryFields<'a> {
+    pub project_key: &'a str,
+    pub issue_type_id: &'a str,
+    pub summary: &'a str,
+    pub epic_key: &'a str,
+    pub sprint_id: Option<i64>,
+    pub reporter_id: Option<&'a str>,
+    pub assignee_id: Option<&'a str>,
+    pub squad: Option<&'a Value>,
+    pub developer_id: Option<&'a str>,
+    pub ac_adf: &'a Value,
+}
+
+/// Build the `{ "fields": {...} }` body for creating a Story under an epic, with
+/// sprint, reporter, assignee, squad, developer, and the AC custom field.
+/// Priority is fixed to "Highest". Optional fields are omitted when absent.
+pub fn build_story_body(s: &StoryFields) -> Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("project".into(), serde_json::json!({ "key": s.project_key }));
+    fields.insert("issuetype".into(), serde_json::json!({ "id": s.issue_type_id }));
+    fields.insert("summary".into(), serde_json::json!(s.summary));
+    fields.insert("parent".into(), serde_json::json!({ "key": s.epic_key }));
+    fields.insert("priority".into(), serde_json::json!({ "name": "Highest" }));
+    fields.insert("customfield_10125".into(), s.ac_adf.clone());
+    if let Some(id) = s.sprint_id {
+        fields.insert("customfield_10021".into(), serde_json::json!(id));
+    }
+    if let Some(r) = s.reporter_id {
+        fields.insert("reporter".into(), serde_json::json!({ "accountId": r }));
+    }
+    if let Some(a) = s.assignee_id {
+        fields.insert("assignee".into(), serde_json::json!({ "accountId": a }));
+    }
+    if let Some(sq) = s.squad {
+        fields.insert("customfield_10447".into(), sq.clone());
+    }
+    if let Some(d) = s.developer_id {
+        fields.insert("customfield_10612".into(), serde_json::json!({ "accountId": d }));
+    }
+    serde_json::json!({ "fields": Value::Object(fields) })
+}
+
+// ---------------------------------------------------------------------------
+// Ticket Builder: active sprint + source ticket resolution
+// ---------------------------------------------------------------------------
+
+/// Find the active sprint's numeric id in a search response's
+/// `customfield_10021` (the Sprint field is an array of sprint objects).
+pub fn parse_active_sprint_id(json: &str) -> Option<i64> {
+    let root: Value = serde_json::from_str(json).ok()?;
+    let issues = root.get("issues").and_then(Value::as_array)?;
+    for issue in issues {
+        let sprints = issue
+            .get("fields")
+            .and_then(|f| f.get("customfield_10021"))
+            .and_then(Value::as_array);
+        if let Some(sprints) = sprints {
+            for sp in sprints {
+                if sp.get("state").and_then(Value::as_str) == Some("active") {
+                    if let Some(id) = sp.get("id").and_then(Value::as_i64) {
+                        return Some(id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fetch the active sprint id for a project. Thin HTTP wrapper; not unit-tested.
+pub fn fetch_active_sprint_id(base_url: &str, email: &str, token: &str, project: &str) -> Result<i64> {
+    let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
+    let jql = format!("project = \"{}\" AND sprint in openSprints()", project.trim());
+    let client = crate::net::client();
+    let body = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .query(&[
+            ("jql", jql.as_str()),
+            ("fields", "customfield_10021"),
+            ("maxResults", "1"),
+        ])
+        .send()?
+        .error_for_status()?
+        .text()?;
+    parse_active_sprint_id(&body)
+        .ok_or_else(|| anyhow::anyhow!("Sprint aktif tidak ditemukan untuk project {project}"))
+}
+
+/// The fields read from a source ticket (e.g. USSTOCK-xxxx) to populate a new
+/// QAT Story: its summary, Squad Origin value (project-picker, copied as-is),
+/// Developer accountId (falling back to the source assignee), and Acceptance
+/// Criteria ADF (if present).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SourceTicket {
+    pub summary: String,
+    pub squad: Option<Value>,
+    pub developer: Option<String>,
+    pub ac_adf: Option<Value>,
+}
+
+/// Parse a Jira issue response into a [`SourceTicket`].
+pub fn parse_source_ticket(json: &str) -> Result<SourceTicket> {
+    let root: Value = serde_json::from_str(json)?;
+    let f = root.get("fields").cloned().unwrap_or(Value::Null);
+    let summary = f
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let squad = f.get("customfield_10447").filter(|v| !v.is_null()).cloned();
+    let assignee_acc = f
+        .get("assignee")
+        .and_then(|a| a.get("accountId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let developer = f
+        .get("customfield_10612")
+        .and_then(|d| d.get("accountId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(assignee_acc); // fall back to the source assignee
+    let ac_adf = f.get("customfield_10125").filter(|v| !v.is_null()).cloned();
+    Ok(SourceTicket {
+        summary,
+        squad,
+        developer,
+        ac_adf,
+    })
+}
+
+/// Fetch a source ticket's builder-relevant fields. Thin HTTP wrapper; not unit-tested.
+pub fn fetch_source_ticket(base_url: &str, email: &str, token: &str, key: &str) -> Result<SourceTicket> {
+    let url = format!(
+        "{}/rest/api/3/issue/{}?fields=summary,customfield_10447,customfield_10612,assignee,customfield_10125",
+        base_url.trim_end_matches('/'),
+        key
+    );
+    let client = crate::net::client();
+    let resp = client
+        .get(url)
+        .basic_auth(email, Some(token))
+        .header("Accept", "application/json")
+        .send()?;
+    let body = jira_body(resp)?;
+    parse_source_ticket(&body)
+}
+
+/// Resolve a user by name/query to an accountId via assignable search.
+/// Returns the first match. Thin HTTP wrapper; not unit-tested.
+pub fn resolve_user(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    project: &str,
+    query: &str,
+) -> Result<Option<String>> {
+    let users = fetch_assignees(base_url, email, token, project)?;
+    let q = query.trim().to_lowercase();
+    // Prefer an exact display-name match, then a contains match.
+    let exact = users.iter().find(|u| u.display_name.to_lowercase() == q);
+    let contains = users
+        .iter()
+        .find(|u| u.display_name.to_lowercase().contains(&q) || q.contains(&u.display_name.to_lowercase()));
+    Ok(exact.or(contains).map(|u| u.account_id.clone()))
 }
 
 /// Verify Jira credentials by fetching the current user; returns the display
@@ -822,6 +1113,141 @@ pub fn add_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_ac_adf_no_source_generates_list() {
+        let lines = vec!["Stocks show".to_string(), "No regression".to_string()];
+        let adf = build_ac_adf(
+            None, None, None, "https://x.atlassian.net",
+            "https://github.com/o/r/pull/3200", "3200", &lines,
+        );
+        assert_eq!(adf["type"], "doc");
+        let s = adf.to_string();
+        assert!(s.contains("Source Ticket"));
+        assert!(s.contains("No source ticket"));
+        assert!(s.contains("GitHub PR"));
+        assert!(s.contains("pull/3200"));
+        assert!(s.contains("Acceptance Criteria"));
+        assert!(s.contains("Stocks show"));
+        assert!(s.contains("orderedList"));
+    }
+
+    #[test]
+    fn build_ac_adf_with_source_splices_source_ac() {
+        let src_ac = serde_json::json!({
+            "type":"doc","version":1,
+            "content":[{"type":"paragraph","content":[{"type":"text","text":"SOURCE-AC-BODY"}]}]
+        });
+        let adf = build_ac_adf(
+            Some("USSTOCK-2968"), Some("Seasonality"), Some(&src_ac),
+            "https://x.atlassian.net", "https://github.com/o/r/pull/3227", "3227", &[],
+        );
+        let s = adf.to_string();
+        assert!(s.contains("USSTOCK-2968"));
+        assert!(s.contains("SOURCE-AC-BODY")); // spliced verbatim
+        assert!(!s.contains("No source ticket"));
+    }
+
+    #[test]
+    fn build_story_body_sets_all_fields() {
+        let ac = serde_json::json!({ "type": "doc", "version": 1, "content": [] });
+        let squad = serde_json::json!({ "key": "USSTOCK" });
+        let v = build_story_body(&StoryFields {
+            project_key: "QAT",
+            issue_type_id: "10001",
+            summary: "[UAT] [GTG] x #1",
+            epic_key: "QAT-3423",
+            sprint_id: Some(9348),
+            reporter_id: Some("theo"),
+            assignee_id: Some("reva"),
+            squad: Some(&squad),
+            developer_id: Some("dev"),
+            ac_adf: &ac,
+        });
+        let f = &v["fields"];
+        assert_eq!(f["project"]["key"], "QAT");
+        assert_eq!(f["issuetype"]["id"], "10001");
+        assert_eq!(f["summary"], "[UAT] [GTG] x #1");
+        assert_eq!(f["parent"]["key"], "QAT-3423");
+        assert_eq!(f["priority"]["name"], "Highest");
+        assert_eq!(f["reporter"]["accountId"], "theo");
+        assert_eq!(f["assignee"]["accountId"], "reva");
+        assert_eq!(f["customfield_10021"], 9348);
+        assert_eq!(f["customfield_10447"]["key"], "USSTOCK");
+        assert_eq!(f["customfield_10612"]["accountId"], "dev");
+        assert_eq!(f["customfield_10125"]["type"], "doc");
+    }
+
+    #[test]
+    fn build_story_body_omits_absent_optionals() {
+        let ac = serde_json::json!({ "type": "doc", "version": 1, "content": [] });
+        let v = build_story_body(&StoryFields {
+            project_key: "QAT",
+            issue_type_id: "10001",
+            summary: "s",
+            epic_key: "QAT-1",
+            sprint_id: None,
+            reporter_id: None,
+            assignee_id: None,
+            squad: None,
+            developer_id: None,
+            ac_adf: &ac,
+        });
+        let f = &v["fields"];
+        assert!(f.get("customfield_10021").is_none());
+        assert!(f.get("reporter").is_none());
+        assert!(f.get("assignee").is_none());
+        assert!(f.get("customfield_10447").is_none());
+        assert!(f.get("customfield_10612").is_none());
+    }
+
+    #[test]
+    fn parse_active_sprint_id_picks_the_active_one() {
+        let json = r#"{"issues":[{"fields":{"customfield_10021":[
+            {"id":9300,"name":"QAT Sprint 57","state":"closed"},
+            {"id":9348,"name":"QAT Sprint 58","state":"active"}
+        ]}}]}"#;
+        assert_eq!(parse_active_sprint_id(json), Some(9348));
+    }
+
+    #[test]
+    fn parse_active_sprint_id_none_when_no_active() {
+        let json = r#"{"issues":[{"fields":{"customfield_10021":[
+            {"id":9300,"name":"QAT Sprint 57","state":"closed"}
+        ]}}]}"#;
+        assert_eq!(parse_active_sprint_id(json), None);
+        assert_eq!(parse_active_sprint_id(r#"{"issues":[]}"#), None);
+    }
+
+    #[test]
+    fn parse_source_ticket_reads_fields_with_developer() {
+        let json = r#"{"fields":{
+            "summary":"GTG - seasonality",
+            "customfield_10447":{"key":"USSTOCK","name":"Squad - Trading - US Stock"},
+            "customfield_10612":{"accountId":"dev-123"},
+            "assignee":{"accountId":"asg-999"},
+            "customfield_10125":{"type":"doc","version":1,"content":[{"type":"paragraph"}]}
+        }}"#;
+        let s = parse_source_ticket(json).unwrap();
+        assert_eq!(s.summary, "GTG - seasonality");
+        assert_eq!(s.developer.as_deref(), Some("dev-123"));
+        assert_eq!(s.squad.unwrap()["key"], "USSTOCK");
+        assert_eq!(s.ac_adf.unwrap()["type"], "doc");
+    }
+
+    #[test]
+    fn parse_source_ticket_developer_falls_back_to_assignee() {
+        let json = r#"{"fields":{
+            "summary":"x",
+            "customfield_10612":null,
+            "assignee":{"accountId":"asg-999"}
+        }}"#;
+        let s = parse_source_ticket(json).unwrap();
+        // No Developer set → fall back to the source assignee.
+        assert_eq!(s.developer.as_deref(), Some("asg-999"));
+        assert!(s.squad.is_none());
+        assert!(s.ac_adf.is_none());
+    }
 
     #[test]
     fn text_to_adf_wraps_each_line_in_a_paragraph() {
