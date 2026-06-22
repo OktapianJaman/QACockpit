@@ -280,10 +280,15 @@ function orderedColumns(tickets: BoardTicket[]): string[] {
 function buildCard(t: BoardTicket): HTMLElement {
   const card = document.createElement("div");
   card.className = "kcard";
+  // The status badge only adds info when it differs from the column it sits in
+  // (e.g. a "QA Passed" card inside the merged "Done" column). When equal, it
+  // would just repeat the column header, so drop it.
+  const showStatus = displayColumn(t.status).toLowerCase() !== t.status.toLowerCase();
+  const statusBadge = showStatus ? `<span class="kc-status">${esc(t.status)}</span>` : "";
   card.innerHTML = `
     <div class="kc-top">
       <span class="kc-key mono">${esc(t.key)}</span>
-      <span class="kc-status">${esc(t.status)}</span>
+      ${statusBadge}
     </div>
     <div class="kc-summary">${esc(t.summary || "—")}</div>
     <div class="kc-foot">
