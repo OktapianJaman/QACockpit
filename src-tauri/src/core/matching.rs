@@ -15,6 +15,23 @@ pub fn extract_ticket_key(text: &str) -> Option<String> {
     key_re().find(text).map(|m| m.as_str().to_string())
 }
 
+/// Like [`extract_ticket_key`] but skips keys whose project equals
+/// `exclude_project` (case-insensitive). Used to pull a Story's source ticket
+/// from a PR description without mistaking the Story's own epic key for it.
+pub fn extract_ticket_key_excluding(text: &str, exclude_project: &str) -> Option<String> {
+    let excl = exclude_project.trim();
+    key_re()
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .find(|k| {
+            excl.is_empty()
+                || !k
+                    .split('-')
+                    .next()
+                    .is_some_and(|p| p.eq_ignore_ascii_case(excl))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,5 +62,30 @@ mod tests {
     fn underscore_adjacent_key_is_missed() {
         // `\b` does not break between `_` and a letter, so this key is intentionally missed.
         assert_eq!(extract_ticket_key("branch_PROJ-42"), None);
+    }
+    #[test]
+    fn excluding_skips_epic_project_key() {
+        assert_eq!(
+            extract_ticket_key_excluding("Closes QAT-3423 for USSTOCK-2835", "QAT"),
+            Some("USSTOCK-2835".to_string())
+        );
+    }
+    #[test]
+    fn excluding_is_case_insensitive_on_project() {
+        assert_eq!(
+            extract_ticket_key_excluding("qat ref QAT-1 then ABC-2", "qat"),
+            Some("ABC-2".to_string())
+        );
+    }
+    #[test]
+    fn excluding_returns_none_when_only_epic_key() {
+        assert_eq!(extract_ticket_key_excluding("just QAT-3423 here", "QAT"), None);
+    }
+    #[test]
+    fn excluding_with_empty_project_behaves_like_plain() {
+        assert_eq!(
+            extract_ticket_key_excluding("AB-1 vs CD-2", ""),
+            Some("AB-1".to_string())
+        );
     }
 }

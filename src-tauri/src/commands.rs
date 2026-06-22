@@ -1203,10 +1203,52 @@ pub async fn parse_ticket_blob(
             &crate::ai::gemma::parse_ticket_rows_prompt(&blob),
         );
         let json = crate::ai::gemma::extract_json(&raw);
-        serde_json::from_str::<ParsedBlob>(json)
-            .map_err(|e| format!("AI gagal mem-parse daftar (cek API key Gemini): {e}"))
+        let mut parsed = serde_json::from_str::<ParsedBlob>(json)
+            .map_err(|e| format!("AI gagal mem-parse daftar (cek API key Gemini): {e}"))?;
+        enrich_rows_from_pr(&cfg, &parsed.epic, &mut parsed.rows);
+        Ok(parsed)
     })
     .await
+}
+
+/// Fill in missing `source_ticket` / `title` from each row's PR. For rows that
+/// lack a source or title, fetches the PR's title+body and:
+/// - sets `source_ticket` from the first Jira key in the PR (excluding the
+///   epic's own project, so the epic key isn't mistaken for the source);
+/// - sets `title` from the PR title.
+/// A no-op without a GitHub token; per-row fetch failures are skipped silently
+/// (the row stays as the AI parsed it and remains editable in the table).
+fn enrich_rows_from_pr(cfg: &AppConfig, epic: &str, rows: &mut [BuilderRow]) {
+    if cfg.github_token.trim().is_empty() {
+        return;
+    }
+    let epic_project = epic.split('-').next().unwrap_or("");
+    for row in rows.iter_mut() {
+        let need_source = row.source_ticket.trim().is_empty();
+        let need_title = row.title.trim().is_empty();
+        if !need_source && !need_title {
+            continue;
+        }
+        let Some((repo, number)) = integrations::github::parse_pr_url(&row.pr_url) else {
+            continue;
+        };
+        let Ok((pr_title, pr_body)) =
+            integrations::github::fetch_pr_detail(&cfg.github_token, &repo, number)
+        else {
+            continue;
+        };
+        if need_source {
+            let haystack = format!("{pr_title}\n{pr_body}");
+            if let Some(key) =
+                crate::core::matching::extract_ticket_key_excluding(&haystack, epic_project)
+            {
+                row.source_ticket = key;
+            }
+        }
+        if need_title && !pr_title.trim().is_empty() {
+            row.title = pr_title.trim().to_string();
+        }
+    }
 }
 
 /// The outcome of creating one Story (per-row; failures don't stop the rest).

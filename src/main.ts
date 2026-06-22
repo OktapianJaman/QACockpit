@@ -1392,6 +1392,7 @@ function openTicketBuilder(): void {
   ($("tb-blob") as HTMLTextAreaElement).value = "";
   $("tb-rows").innerHTML = "";
   show($("tb-table-wrap"), false);
+  show($("tb-loading"), false);
   $("tb-results").innerHTML = "";
   show($("ticket-overlay"), true);
 }
@@ -1429,6 +1430,8 @@ async function parseTicketBlob(): Promise<void> {
   btn.disabled = true;
   btn.classList.add("busy");
   btn.textContent = "Parsing…";
+  show($("tb-table-wrap"), false);
+  show($("tb-loading"), true);
   try {
     const parsed = await invoke<ParsedBlob>("parse_ticket_blob", { blob });
     if (parsed.epic) ($("tb-epic") as HTMLInputElement).value = parsed.epic;
@@ -1439,6 +1442,7 @@ async function parseTicketBlob(): Promise<void> {
   } catch (e) {
     toast(`Gagal parse: ${errStr(e)}`, "error");
   } finally {
+    show($("tb-loading"), false);
     btn.disabled = false;
     btn.classList.remove("busy");
     btn.textContent = prev;
