@@ -217,7 +217,8 @@ pub fn explain_fairness_prompt(items: &[(String, Assessment)]) -> String {
 /// Build an Indonesian prompt asking Gemma to draft test cases for a ticket.
 /// Uses a SIMPLE pipe-separated, one-per-line format that a small local model
 /// can follow reliably: `Judul | Langkah | Hasil yang diharapkan`.
-pub fn test_cases_prompt(summary: &str, key: &str) -> String {
+pub fn test_cases_prompt(summary: &str, key: &str, language: &str) -> String {
+    let lang_rule = tc_language_rule(language);
     format!(
         "Kamu adalah asisten QA. Buatkan 3 sampai 6 test case untuk tiket Jira berikut.\n\n\
          Tiket: {key}\n\
@@ -227,11 +228,22 @@ pub fn test_cases_prompt(summary: &str, key: &str) -> String {
          - Format tiap baris PERSIS: Judul | Langkah | Hasil yang diharapkan\n\
          - Pakai tanda pipa (|) sebagai pemisah ketiga bagian.\n\
          - JANGAN pakai penomoran, bullet, atau teks tambahan apa pun.\n\
-         - Tulis dalam bahasa Indonesia.\n\n\
-         Contoh:\n\
+         {lang_rule}\n\n\
+         Contoh format (terjemahkan isinya ke bahasa output):\n\
          Login dengan kredensial valid | Buka halaman login, isi email & password benar, klik Masuk | Pengguna masuk ke dashboard\n\n\
          Sekarang tulis test case-nya:"
     )
+}
+
+/// Output-language instruction line shared by the test-case prompts. `language`
+/// is the raw config value ("Indonesia" | "English"); empty → Indonesia.
+fn tc_language_rule(language: &str) -> String {
+    let lang = if language.trim().is_empty() {
+        "Indonesia"
+    } else {
+        language.trim()
+    };
+    format!("- PENTING: tulis semua test case dalam bahasa {lang} (output HARUS dalam bahasa {lang}).")
 }
 
 /// Parse the model's pipe-separated test-case output into `(title, steps, expected)`
@@ -281,8 +293,9 @@ pub fn generate_test_cases(
     target: &AiTarget,
     key: &str,
     summary: &str,
+    language: &str,
 ) -> Vec<(String, String, String)> {
-    parse_test_cases(&complete(target, &test_cases_prompt(summary, key)))
+    parse_test_cases(&complete(target, &test_cases_prompt(summary, key, language)))
 }
 
 /// Max diff length embedded in a PR-review prompt (local model has a small
@@ -326,7 +339,7 @@ pub fn review_pr(target: &AiTarget, key: &str, summary: &str, diff: &str) -> Str
 /// one-per-line pipe format as [`test_cases_prompt`]:
 /// `Judul | Langkah | Hasil yang diharapkan`. The diff is truncated to
 /// [`MAX_DIFF_CHARS`]; when cut a "(diff dipotong)" note is appended.
-pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str) -> String {
+pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str, language: &str) -> String {
     let (diff_text, truncated) = if diff.chars().count() > MAX_DIFF_CHARS {
         let cut: String = diff.chars().take(MAX_DIFF_CHARS).collect();
         (cut, true)
@@ -334,6 +347,7 @@ pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str) -> Stri
         (diff.to_string(), false)
     };
     let note = if truncated { "\n(diff dipotong)" } else { "" };
+    let lang_rule = tc_language_rule(language);
 
     format!(
         "Kamu adalah asisten QA. Buatkan test case berdasarkan PERUBAHAN KODE \
@@ -349,8 +363,8 @@ pub fn test_cases_from_diff_prompt(key: &str, summary: &str, diff: &str) -> Stri
          - Format tiap baris PERSIS: Judul | Langkah | Hasil yang diharapkan\n\
          - Pakai tanda pipa (|) sebagai pemisah ketiga bagian.\n\
          - JANGAN pakai penomoran, bullet, atau teks tambahan apa pun.\n\
-         - Tulis dalam bahasa Indonesia.\n\n\
-         Contoh:\n\
+         {lang_rule}\n\n\
+         Contoh format (terjemahkan isinya ke bahasa output):\n\
          Validasi input kosong | Kirim form tanpa isi field wajib | Muncul pesan error validasi\n\n\
          Sekarang tulis test case-nya:"
     )
@@ -362,8 +376,9 @@ pub fn generate_test_cases_from_diff(
     key: &str,
     summary: &str,
     diff: &str,
+    language: &str,
 ) -> Vec<(String, String, String)> {
-    parse_test_cases(&complete(target, &test_cases_from_diff_prompt(key, summary, diff)))
+    parse_test_cases(&complete(target, &test_cases_from_diff_prompt(key, summary, diff, language)))
 }
 
 /// POST a prompt to the configured AI [`AiTarget`] and return the model's reply.
@@ -792,12 +807,26 @@ mod tests {
 
     #[test]
     fn test_cases_prompt_contains_key_facts() {
-        let p = test_cases_prompt("Login bug di halaman utama", "QAT-7");
+        let p = test_cases_prompt("Login bug di halaman utama", "QAT-7", "Indonesia");
         assert!(p.contains("QAT-7"));
         assert!(p.contains("Login bug di halaman utama"));
         // Indonesian + the pipe format.
         assert!(p.contains("test case"));
         assert!(p.contains("Judul | Langkah | Hasil"));
+        assert!(p.contains("bahasa Indonesia"));
+    }
+
+    #[test]
+    fn test_cases_prompt_honors_english_language() {
+        let p = test_cases_prompt("Login bug", "QAT-7", "English");
+        assert!(p.contains("bahasa English"));
+        assert!(!p.contains("bahasa Indonesia"));
+    }
+
+    #[test]
+    fn tc_language_rule_defaults_to_indonesia_when_empty() {
+        assert!(tc_language_rule("").contains("bahasa Indonesia"));
+        assert!(tc_language_rule("  ").contains("bahasa Indonesia"));
     }
 
     #[test]
@@ -854,7 +883,7 @@ Cuma judul tanpa pipa
     #[test]
     fn test_cases_from_diff_prompt_contains_key_facts() {
         let diff = "diff --git a/login.ts b/login.ts\n+const x = retry();";
-        let p = test_cases_from_diff_prompt("QAT-7", "Login bug di halaman utama", diff);
+        let p = test_cases_from_diff_prompt("QAT-7", "Login bug di halaman utama", diff, "Indonesia");
         assert!(p.contains("QAT-7"));
         // Part of the diff is embedded.
         assert!(p.contains("retry()"));
@@ -866,7 +895,7 @@ Cuma judul tanpa pipa
     #[test]
     fn test_cases_from_diff_prompt_truncates_long_diff() {
         let diff = "x".repeat(MAX_DIFF_CHARS + 500);
-        let p = test_cases_from_diff_prompt("QAT-1", "summary", &diff);
+        let p = test_cases_from_diff_prompt("QAT-1", "summary", &diff, "Indonesia");
         assert!(p.contains("(diff dipotong)"));
         assert!(!p.contains(&"x".repeat(MAX_DIFF_CHARS + 1)));
     }

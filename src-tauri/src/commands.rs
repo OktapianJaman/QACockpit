@@ -59,6 +59,10 @@ pub struct AppConfig {
     /// (see [`crate::ai::gemma::GEMINI_MODEL`]) and not user-configurable.
     #[serde(default)]
     pub gemini_api_key: String,
+    /// Output language for AI generation (test cases, etc.): "Indonesia" |
+    /// "English". Empty/legacy configs default to "Indonesia" in `load_config`.
+    #[serde(default)]
+    pub ai_language: String,
 }
 
 const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
@@ -79,6 +83,9 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_sprint_scope: get("jira_sprint_scope")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
         gemini_api_key: get("gemini_api_key")?.unwrap_or_default(),
+        ai_language: get("ai_language")?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Indonesia".to_string()),
     })
 }
 
@@ -121,6 +128,7 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
     set("github_token", &cfg.github_token)?;
     set("gemini_api_key", &cfg.gemini_api_key)?;
+    set("ai_language", &cfg.ai_language)?;
     Ok(())
 }
 
@@ -952,7 +960,8 @@ pub async fn generate_test_cases(
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
-    let drafted = crate::ai::gemma::generate_test_cases(&ai_target(&cfg), &key, &summary);
+    let drafted =
+        crate::ai::gemma::generate_test_cases(&ai_target(&cfg), &key, &summary, &cfg.ai_language);
     if drafted.is_empty() {
         return Err("AI nggak menghasilkan test case — coba lagi atau cek API key Gemini".into());
     }
@@ -983,7 +992,7 @@ pub async fn generate_test_cases_from_pr(
         .map_err(|e| e.to_string())?;
     let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
         &ai_target(&cfg),
-        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &diff),
+        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &diff, &cfg.ai_language),
     ));
     if cases.is_empty() {
         return Err("AI nggak menghasilkan test case dari PR ini — coba lagi atau cek API key Gemini".into());
@@ -1029,7 +1038,7 @@ pub async fn generate_test_cases_from_prs(
     }
     let cases = crate::ai::gemma::parse_test_cases(&crate::ai::gemma::complete(
         &ai_target(&cfg),
-        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &combined),
+        &crate::ai::gemma::test_cases_from_diff_prompt(&key, &summary, &combined, &cfg.ai_language),
     ));
     if cases.is_empty() {
         return Err("AI nggak menghasilkan test case dari PR-PR ini — coba lagi atau cek API key Gemini".into());

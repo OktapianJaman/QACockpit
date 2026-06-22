@@ -62,6 +62,7 @@ interface AppConfig {
   jira_sprint_scope: string;
   github_token: string;
   gemini_api_key: string;
+  ai_language: string;
 }
 
 const CONFIG_KEYS: (keyof AppConfig)[] = [
@@ -74,6 +75,7 @@ const CONFIG_KEYS: (keyof AppConfig)[] = [
   "jira_sprint_scope",
   "github_token",
   "gemini_api_key",
+  "ai_language",
 ];
 
 /** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */
@@ -1684,6 +1686,12 @@ function openBugWriter(): void {
   clearBwImage();
   show($("bw-result"), false);
   show($("bugwriter-overlay"), true);
+  // Default the output language to the global AI language (still overridable here).
+  void invoke<AppConfig>("get_config")
+    .then((cfg) => {
+      if (cfg.ai_language) ($("bw-language") as HTMLSelectElement).value = cfg.ai_language;
+    })
+    .catch(() => {});
   void populateBwProjects();
 }
 

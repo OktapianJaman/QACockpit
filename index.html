@@ -376,6 +376,13 @@
             <input type="text" id="gemini-model-display" value="gemini-2.5-flash" readonly disabled />
             <small class="field-hint">Model di-set tetap ke gemini-2.5-flash (tidak bisa diubah).</small>
           </label>
+          <label>Bahasa output AI
+            <select id="cfg-ai_language">
+              <option value="Indonesia">Indonesia</option>
+              <option value="English">English</option>
+            </select>
+            <small class="field-hint">Bahasa hasil generate AI (test case, dll). Default Bug Writer juga ikut ini.</small>
+          </label>
           <div class="settings-actions">
             <button type="button" id="settings-cancel" class="btn">Batal</button>
             <button type="submit" class="btn primary">Simpan</button>
