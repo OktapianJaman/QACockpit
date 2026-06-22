@@ -375,6 +375,22 @@ h2 {
   transform: translateY(-1px);
 }
 
+.kcard {
+  cursor: grab;
+}
+.kcard:active {
+  cursor: grabbing;
+}
+.kcard.dragging {
+  opacity: 0.45;
+}
+
+/* Column highlighted while a card hovers over it during drag. */
+.column.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
 .kc-top {
   display: flex;
   align-items: center;

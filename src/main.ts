@@ -241,6 +241,8 @@ const STATUS_ORDER = [
 
 let boardTickets: BoardTicket[] = [];
 let boardSearch = "";
+// Key of the card currently being dragged between columns (null = none).
+let draggingKey: string | null = null;
 
 /** Rank a status by the preferred order; unmatched statuses rank last. */
 function statusRank(status: string): number {
@@ -302,6 +304,20 @@ function buildCard(t: BoardTicket): HTMLElement {
     if ((e.target as HTMLElement).closest("button")) return; // points / pindah
     void openDetail(t.key);
   });
+
+  // Drag the card to another column to move its status (like Jira).
+  card.draggable = true;
+  card.addEventListener("dragstart", (e) => {
+    draggingKey = t.key;
+    card.classList.add("dragging");
+    e.dataTransfer?.setData("text/plain", t.key);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  });
+  card.addEventListener("dragend", () => {
+    draggingKey = null;
+    card.classList.remove("dragging");
+  });
+
   const ptsBtn = card.querySelector<HTMLButtonElement>(".ct-points");
   ptsBtn?.addEventListener("click", () => startPointEdit(t, ptsBtn));
   card.querySelector<HTMLButtonElement>(".kc-move")?.addEventListener(
@@ -339,6 +355,23 @@ function buildColumn(status: string, cards: BoardTicket[], total: number): HTMLE
     for (const t of cards) body.appendChild(buildCard(t));
   }
   col.appendChild(body);
+
+  // Drop target: dropping a card here moves it toward this column's status.
+  col.addEventListener("dragover", (e) => {
+    if (!draggingKey) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    col.classList.add("drag-over");
+  });
+  col.addEventListener("dragleave", (e) => {
+    if (!col.contains(e.relatedTarget as Node)) col.classList.remove("drag-over");
+  });
+  col.addEventListener("drop", (e) => {
+    e.preventDefault();
+    col.classList.remove("drag-over");
+    const key = draggingKey || e.dataTransfer?.getData("text/plain") || "";
+    if (key) void handleCardDrop(status, key);
+  });
   return col;
 }
 
@@ -613,6 +646,29 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
     await refreshBoard();
   } catch (e) {
     toast(`Gagal ubah status: ${errStr(e)}`, "error");
+  }
+}
+
+/** Handle a card dropped on a column: pick the transition that leads to that
+ *  column's status. One match → run it (with the actual-point prompt for
+ *  verdicts); several → show the picker; none → tell the user it's not allowed. */
+async function handleCardDrop(targetCol: string, key: string): Promise<void> {
+  const t = ticketByKey(key);
+  if (!t || displayColumn(t.status) === targetCol) return; // unknown or same column
+  let trans: JiraTransition[];
+  try {
+    trans = await invoke<JiraTransition[]>("list_transitions", { key });
+  } catch (e) {
+    toast(`Gagal ambil transisi: ${errStr(e)}`, "error");
+    return;
+  }
+  const matches = trans.filter((tr) => displayColumn(tr.to_status || tr.name) === targetCol);
+  if (matches.length === 1) {
+    await onPickTransition(key, matches[0]);
+  } else if (matches.length === 0) {
+    toast(`${key} nggak bisa langsung dipindah ke "${targetCol}".`, "error");
+  } else {
+    showTransitionPicker(key, matches); // ambiguous → let the user choose
   }
 }
 
