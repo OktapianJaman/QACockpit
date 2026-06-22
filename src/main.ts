@@ -662,7 +662,10 @@ async function handleCardDrop(targetCol: string, key: string): Promise<void> {
     toast(`Gagal ambil transisi: ${errStr(e)}`, "error");
     return;
   }
-  const matches = trans.filter((tr) => displayColumn(tr.to_status || tr.name) === targetCol);
+  const target = targetCol.toLowerCase();
+  const matches = trans.filter(
+    (tr) => displayColumn(tr.to_status || tr.name).toLowerCase() === target
+  );
   if (matches.length === 1) {
     await onPickTransition(key, matches[0]);
   } else if (matches.length === 0) {
