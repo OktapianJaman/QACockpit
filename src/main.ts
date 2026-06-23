@@ -278,6 +278,13 @@ const STATUS_ORDER = [
 
 let boardTickets: BoardTicket[] = [];
 let boardSearch = "";
+// AI output language ("Indonesia" | "English"); drives UI labels that should
+// match the generated content (e.g. test-case Steps/Expected). Loaded at init,
+// refreshed after Settings save.
+let aiLanguage = "Indonesia";
+// Configured sprint scope ("" all | "active" | "backlog"); used for the board's
+// empty-state hint. Loaded at init, refreshed after Settings save.
+let sprintScope = "";
 // Key of the card currently being dragged between columns (null = none).
 let draggingKey: string | null = null;
 
@@ -475,8 +482,14 @@ function renderBoard(tickets: BoardTicket[]): void {
   show($("board-empty"), tickets.length === 0);
   if (tickets.length === 0) {
     board.innerHTML = "";
+    show(board, false); // collapse the board so its min-height doesn't push the message off-screen
+    $("board-empty").textContent =
+      sprintScope === "active"
+        ? "Belum ada sprint aktif. Start sprint-nya di Jira dulu (Backlog → Start sprint), terus klik Sync."
+        : "Belum ada tiket. Klik Sync buat narik dari Jira.";
     return;
   }
+  show(board, true);
 
   const q = boardSearch.trim().toLowerCase();
   const match = (t: BoardTicket): boolean =>
@@ -517,13 +530,7 @@ async function updateBoardSummary(): Promise<void> {
     el.innerHTML = "";
     return;
   }
-  let scope = "";
-  try {
-    scope = (await invoke<AppConfig>("get_config")).jira_sprint_scope ?? "";
-  } catch {
-    /* fall back to "Semua" */
-  }
-  const label = SCOPE_LABEL[scope] ?? "Semua";
+  const label = SCOPE_LABEL[sprintScope] ?? "Semua";
   const pts = boardTickets.reduce((sum, t) => sum + (t.story_points ?? 0), 0);
   const sep = `<span class="bs-sep">·</span>`;
   el.innerHTML =
@@ -834,6 +841,27 @@ function tcStatusLabel(status: string): string {
   return "untested";
 }
 
+/** Localized labels for the test-case detail fields, following the AI output
+ *  language so they match the generated content. */
+function tcLabels(): { steps: string; expected: string; notes: string; notesPlaceholder: string } {
+  const en = aiLanguage === "English";
+  return en
+    ? { steps: "Steps", expected: "Expected result", notes: "Notes", notesPlaceholder: "Notes / actual result…" }
+    : { steps: "Langkah", expected: "Hasil yang diharapkan", notes: "Catatan", notesPlaceholder: "Catatan / hasil aktual…" };
+}
+
+/** Split a steps string into individual steps. Prefers explicit line breaks;
+ *  otherwise splits on inline numbered markers ("1. ", "2) ", …). Leading
+ *  numbering is stripped since the list re-numbers. */
+function splitSteps(steps: string): string[] {
+  const s = steps.trim();
+  let parts = s.split(/\r?\n+/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length <= 1) {
+    parts = s.split(/\s+(?=\d+[.)]\s)/).map((x) => x.trim()).filter(Boolean);
+  }
+  return parts.map((p) => p.replace(/^\d+[.)]\s*/, "")).filter(Boolean);
+}
+
 /** Render the test-case list + counter for the open ticket. */
 function renderTestCases(cases: TestCase[]): void {
   const list = $("tc-list");
@@ -850,6 +878,21 @@ function renderTestCases(cases: TestCase[]): void {
   for (const c of cases) {
     const item = document.createElement("div");
     item.className = `tc-item tc-${c.status}`;
+    const L = tcLabels();
+    const stepsHtml = c.steps
+      ? `<div class="tc-field tc-field-steps">
+           <span class="tc-label">${L.steps}</span>
+           <ol class="tc-steps">${splitSteps(c.steps)
+             .map((s) => `<li>${mdInline(esc(s))}</li>`)
+             .join("")}</ol>
+         </div>`
+      : "";
+    const expectedHtml = c.expected
+      ? `<div class="tc-field tc-field-expected">
+           <span class="tc-label">${L.expected}</span>
+           <div class="tc-value">${mdInline(esc(c.expected))}</div>
+         </div>`
+      : "";
     // The detail panel always exists now (it hosts the editable notes field),
     // even when a case has no steps/expected.
     item.innerHTML = `
@@ -864,11 +907,11 @@ function renderTestCases(cases: TestCase[]): void {
         </div>
       </div>
       <div class="tc-detail">
-        ${c.steps ? `<div class="tc-field"><span class="tc-label">Langkah:</span> ${esc(c.steps)}</div>` : ""}
-        ${c.expected ? `<div class="tc-field"><span class="tc-label">Harapan:</span> ${esc(c.expected)}</div>` : ""}
+        ${stepsHtml}
+        ${expectedHtml}
         <div class="tc-field">
-          <span class="tc-label">Catatan:</span>
-          <textarea class="tc-notes" rows="2" placeholder="Catatan / hasil aktual…">${esc(c.notes)}</textarea>
+          <span class="tc-label">${L.notes}</span>
+          <textarea class="tc-notes" rows="2" placeholder="${L.notesPlaceholder}">${esc(c.notes)}</textarea>
         </div>
       </div>`;
 
@@ -1562,6 +1605,8 @@ async function saveSettings(): Promise<void> {
   const cfg = readConfigFromForm();
   try {
     await invoke("set_config", { cfg });
+    aiLanguage = cfg.ai_language || "Indonesia";
+    sprintScope = cfg.jira_sprint_scope ?? "";
     toast("Pengaturan tersimpan.");
     closeSettings();
   } catch (e) {
@@ -2320,6 +2365,13 @@ async function checkForUpdate(manual = false): Promise<void> {
 async function init(): Promise<void> {
   initTheme();
   wireEvents();
+  try {
+    const cfg = await invoke<AppConfig>("get_config");
+    aiLanguage = cfg.ai_language || "Indonesia";
+    sprintScope = cfg.jira_sprint_scope ?? "";
+  } catch {
+    /* keep defaults */
+  }
   await refreshBoard();
   getVersion()
     .then((v) => ($("app-version").textContent = `v${v}`))

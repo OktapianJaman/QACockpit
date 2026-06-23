@@ -253,11 +253,11 @@ h2 {
 }
 
 .board-empty {
+  text-align: center;
   color: var(--text-faint);
   font-size: 14px;
   font-style: italic;
-  text-align: center;
-  padding: 80px 16px;
+  padding: 24px 16px;
 }
 
 /* ---------------- Column board ---------------- */
@@ -882,14 +882,50 @@ h2 {
 
 .tc-field {
   font-size: 12.5px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text-dim);
-  margin-top: 3px;
+  margin-top: 10px;
 }
 
 .tc-label {
+  display: block;
+  margin-bottom: 4px;
   color: var(--text-faint);
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Steps as a proper numbered list */
+.tc-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tc-steps li {
+  padding-left: 3px;
+}
+
+/* Expected result block — subtle highlight so it reads as the assertion */
+.tc-field-expected .tc-value {
+  padding: 7px 9px;
+  background: rgba(52, 211, 153, 0.08);
+  border-left: 3px solid var(--green);
+  border-radius: 0 6px 6px 0;
+  color: var(--text);
+}
+
+.tc-field code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
 }
 
 .tc-notes {
