@@ -205,6 +205,22 @@ h2 {
   margin-bottom: 12px;
 }
 
+/* Clickable Jira key in the detail header (opens the issue in a browser). */
+#detail-key.has-link {
+  cursor: pointer;
+}
+#detail-key.has-link::after {
+  content: " 🔗";
+  font-size: 0.7em;
+  opacity: 0.6;
+}
+#detail-key.has-link:hover {
+  text-decoration: underline;
+}
+#detail-key.has-link:hover::after {
+  opacity: 1;
+}
+
 /* ---------------- Ticket table (board) ---------------- */
 
 .board-toolbar {

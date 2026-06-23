@@ -734,6 +734,8 @@ async function handleCardDrop(targetCol: string, key: string): Promise<void> {
 
 // The ticket whose detail modal is currently open (null = closed).
 let detailKey: string | null = null;
+/** Jira base URL (no trailing slash) for the currently open detail, "" if unset. */
+let jiraBrowseBase = "";
 // PRs linked to the open ticket (a ticket can span repos, e.g. native + flutter).
 let linkedPrs: PrRef[] = [];
 // Repos for the PR repo dropdown — a fixed, hardcoded list.
@@ -809,6 +811,16 @@ async function openDetail(key: string): Promise<void> {
   detailKey = key;
   const t = ticketByKey(key);
   $("detail-key").textContent = key;
+  // Make the key open the Jira issue in a browser, when a base URL is configured.
+  jiraBrowseBase = "";
+  $("detail-key").classList.remove("has-link");
+  void invoke<AppConfig>("get_config")
+    .then((cfg) => {
+      jiraBrowseBase = (cfg.jira_base_url || "").trim().replace(/\/+$/, "");
+      $("detail-key").classList.toggle("has-link", jiraBrowseBase !== "");
+      $("detail-key").title = jiraBrowseBase ? "Buka di Jira" : "";
+    })
+    .catch(() => {});
   $("detail-summary").textContent = t?.summary || "—";
   const statusEl = $("detail-status");
   statusEl.textContent = t?.status || "—";
@@ -2299,6 +2311,11 @@ function wireEvents(): void {
 
   // Ticket detail modal.
   $("detail-close").addEventListener("click", closeDetail);
+  $("detail-key").addEventListener("click", () => {
+    if (!detailKey || !jiraBrowseBase) return;
+    const url = `${jiraBrowseBase}/browse/${detailKey}`;
+    void openUrl(url).catch(() => toast("Gagal buka link Jira.", "error"));
+  });
   $("detail-overlay").addEventListener("click", (e) => {
     if (e.target === $("detail-overlay")) closeDetail();
   });
