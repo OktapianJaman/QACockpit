@@ -1585,6 +1585,39 @@ pub async fn summarize_pr(
     .await
 }
 
+/// One turn of a PR follow-up chat: `role` is "user" or "assistant".
+#[derive(serde::Deserialize)]
+pub struct ChatMsg {
+    pub role: String,
+    pub content: String,
+}
+
+/// Answer a QA follow-up question about a PR, grounded in its diff. `history` is
+/// the full running conversation (last entry = the new question); the diff is
+/// re-fetched each turn, same as [`summarize_pr`].
+#[tauri::command]
+pub async fn ask_pr(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    summary: String,
+    repo: String,
+    number: i64,
+    history: Vec<ChatMsg>,
+) -> Result<String, String> {
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        if cfg.github_token.is_empty() {
+            return Err(GITHUB_TOKEN_MISSING.into());
+        }
+        let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
+            .map_err(|e| e.to_string())?;
+        let turns: Vec<(String, String)> =
+            history.into_iter().map(|m| (m.role, m.content)).collect();
+        Ok(crate::ai::gemma::answer_pr(&ai_target(&cfg), &key, &summary, &diff, &turns))
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

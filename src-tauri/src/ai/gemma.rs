@@ -333,6 +333,54 @@ pub fn review_pr(target: &AiTarget, key: &str, summary: &str, diff: &str) -> Str
     complete(target, &pr_review_prompt(key, summary, diff))
 }
 
+/// Build a follow-up Q&A prompt: the model is grounded in the PR diff + ticket
+/// summary and answers the QA engineer's questions. `history` is the running
+/// conversation as `(role, content)` pairs where role is "user" or "assistant";
+/// the last entry is the new question. Answers must stay grounded in the diff —
+/// if something isn't in the PR, the model should say so rather than guess.
+pub fn pr_chat_prompt(key: &str, summary: &str, diff: &str, history: &[(String, String)]) -> String {
+    let (diff_text, truncated) = if diff.chars().count() > MAX_DIFF_CHARS {
+        let cut: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+        (cut, true)
+    } else {
+        (diff.to_string(), false)
+    };
+    let note = if truncated { "\n(diff dipotong)" } else { "" };
+
+    let mut transcript = String::new();
+    for (role, content) in history {
+        let label = if role == "assistant" { "AI" } else { "QA" };
+        transcript.push_str(&format!("{label}: {content}\n"));
+    }
+
+    format!(
+        "Kamu adalah asisten QA. Kamu sedang menjawab pertanyaan lanjutan dari \
+         seorang QA tentang sebuah Pull Request. Jawab berdasarkan diff PR di \
+         bawah ini. Kalau sesuatu tidak terlihat di diff, katakan terus terang \
+         bahwa itu tidak ada/tidak terlihat di PR ini — jangan mengarang. Jawab \
+         singkat dan to the point, dalam bahasa yang sama dengan pertanyaannya \
+         (default bahasa Indonesia).\n\n\
+         Tiket: {key}\n\
+         Ringkasan: {summary}\n\n\
+         Diff PR:\n\
+         ```diff\n{diff_text}{note}\n```\n\n\
+         Percakapan sejauh ini (jawab pesan QA terakhir):\n\
+         {transcript}\n\
+         AI:"
+    )
+}
+
+/// Convenience: answer a QA follow-up question about a PR, grounded in its diff.
+pub fn answer_pr(
+    target: &AiTarget,
+    key: &str,
+    summary: &str,
+    diff: &str,
+    history: &[(String, String)],
+) -> String {
+    complete(target, &pr_chat_prompt(key, summary, diff, history))
+}
+
 /// Build an Indonesian prompt asking Gemma, as a QA assistant, to DRAFT test
 /// cases from a PR diff. The Jira ticket is often empty, so the test cases must
 /// be based on the actual code change (the diff). Uses the SAME strict

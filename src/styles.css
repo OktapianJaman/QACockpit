@@ -1084,6 +1084,13 @@ h2 {
 .pr-ref {
   font-size: 12px;
   color: var(--text-faint);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.pr-ref:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .pr-title {
@@ -1140,6 +1147,85 @@ h2 {
 .pr-review.loading {
   font-style: italic;
   color: var(--text-faint);
+}
+
+/* Follow-up Q&A chat under a PR */
+.pr-chat {
+  margin-top: 10px;
+}
+
+.pr-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.pr-chat-log:not(:empty) {
+  margin-bottom: 8px;
+}
+
+.pr-chat-msg {
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: break-word;
+  max-width: 90%;
+}
+
+.pr-chat-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 3px;
+}
+
+.pr-chat-assistant {
+  align-self: flex-start;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-bottom-left-radius: 3px;
+}
+
+.pr-chat-assistant.loading {
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.pr-chat-assistant p:first-child {
+  margin-top: 0;
+}
+
+.pr-chat-assistant p:last-child {
+  margin-bottom: 0;
+}
+
+.pr-chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.pr-chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.pr-chat-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pr-chat-send {
+  flex: none;
 }
 
 /* Rendered markdown inside AI panels */

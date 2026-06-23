@@ -93,6 +93,7 @@ pub fn run() {
             commands::create_story_tickets,
             commands::list_ticket_prs,
             commands::summarize_pr,
+            commands::ask_pr,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

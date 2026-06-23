@@ -23,12 +23,19 @@ interface TestCase {
   notes: string;
 }
 
+interface ChatMsg {
+  role: "user" | "assistant";
+  content: string;
+}
+
 interface PrRef {
   number: number;
   repo: string;
   title: string;
   state: string;
   url: string;
+  /** Ephemeral follow-up Q&A about this PR (in-memory only, like the summary). */
+  chat?: ChatMsg[];
 }
 
 interface JiraField {
@@ -1028,7 +1035,7 @@ function renderPrs(): void {
     item.className = "pr-item";
     item.innerHTML = `
       <div class="pr-item-head">
-        <span class="pr-ref mono">#${pr.number} · ${esc(pr.repo)}</span>
+        <a class="pr-ref mono" href="${esc(pr.url)}" title="Buka PR di GitHub">#${pr.number} · ${esc(pr.repo)} ↗</a>
         <span class="${prStateClass(pr.state)}">${esc(pr.state)}</span>
         <button class="pr-remove" type="button" title="Hapus dari daftar">✕</button>
       </div>
@@ -1037,7 +1044,31 @@ function renderPrs(): void {
         <button class="btn small primary pr-summarize" type="button">✨ Ringkas + apa yang dites</button>
         <button class="btn small pr-gen-tc" type="button">✨ Buat test case dari PR ini</button>
       </div>
-      <div class="pr-review hidden"></div>`;
+      <div class="pr-review hidden"></div>
+      <div class="pr-chat">
+        <div class="pr-chat-log"></div>
+        <form class="pr-chat-form">
+          <input class="pr-chat-input" type="text" autocomplete="off"
+            placeholder="Tanya AI soal PR ini… (mis. ada app setting-nya nggak?)" />
+          <button class="btn small primary pr-chat-send" type="submit">Tanya</button>
+        </form>
+      </div>`;
+
+    item.querySelector<HTMLAnchorElement>(".pr-ref")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (pr.url) void openUrl(pr.url).catch(() => toast("Gagal buka link.", "error"));
+    });
+
+    const chatLog = item.querySelector<HTMLDivElement>(".pr-chat-log")!;
+    renderPrChat(pr, chatLog);
+    item.querySelector<HTMLFormElement>(".pr-chat-form")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const input = item.querySelector<HTMLInputElement>(".pr-chat-input")!;
+      const q = input.value.trim();
+      if (!q) return;
+      input.value = "";
+      void askPr(pr, q, chatLog);
+    });
 
     const btn = item.querySelector<HTMLButtonElement>(".pr-summarize");
     const panel = item.querySelector<HTMLDivElement>(".pr-review");
@@ -1169,6 +1200,49 @@ async function summarizePr(
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
+  }
+}
+
+/** Render the follow-up Q&A log for one PR into its chat-log element. */
+function renderPrChat(pr: PrRef, log: HTMLDivElement): void {
+  log.innerHTML = "";
+  for (const msg of pr.chat ?? []) {
+    const row = document.createElement("div");
+    row.className = `pr-chat-msg pr-chat-${msg.role}`;
+    row.innerHTML = msg.role === "assistant" ? mdToHtml(msg.content) : esc(msg.content);
+    log.appendChild(row);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+/** Ask a follow-up question about a PR (multi-turn, grounded in the diff). */
+async function askPr(pr: PrRef, question: string, log: HTMLDivElement): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const summary = ticketByKey(key)?.summary || "";
+  pr.chat = pr.chat ?? [];
+  pr.chat.push({ role: "user", content: question });
+  renderPrChat(pr, log);
+
+  const pending = document.createElement("div");
+  pending.className = "pr-chat-msg pr-chat-assistant loading";
+  pending.textContent = "Lagi mikir…";
+  log.appendChild(pending);
+  log.scrollTop = log.scrollHeight;
+
+  try {
+    const answer = await invoke<string>("ask_pr", {
+      key,
+      summary,
+      repo: pr.repo,
+      number: pr.number,
+      history: pr.chat,
+    });
+    pr.chat.push({ role: "assistant", content: answer });
+    renderPrChat(pr, log);
+  } catch (e) {
+    pending.remove();
+    toast(errStr(e), "error");
   }
 }
 
