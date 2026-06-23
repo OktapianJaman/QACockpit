@@ -1130,7 +1130,9 @@ pub async fn create_jira_bug(
     )
     .map_err(|e| e.to_string())?;
 
-    let description = integrations::jira::text_to_adf(&body);
+    // The report body goes into the Acceptance Criteria field (customfield_10125),
+    // which is what the team's bug view surfaces; Description is left empty.
+    let ac = integrations::jira::text_to_adf(&body);
     let priority = priority.as_deref().filter(|p| !p.trim().is_empty());
     let assignee = assignee_id.as_deref().filter(|a| !a.trim().is_empty());
 
@@ -1141,7 +1143,7 @@ pub async fn create_jira_bug(
         project_key.trim(),
         &issue_type_id,
         summary.trim(),
-        &description,
+        &ac,
         priority,
         assignee,
     )

@@ -606,13 +606,16 @@ pub fn text_to_adf(text: &str) -> Value {
     serde_json::json!({ "type": "doc", "version": 1, "content": content })
 }
 
-/// Build the `{ "fields": {...} }` body for `POST /rest/api/3/issue`. `priority`
-/// and `assignee_account_id` are omitted when `None`.
+/// Build the `{ "fields": {...} }` body for `POST /rest/api/3/issue`. The bug
+/// report goes into the Acceptance Criteria field (`customfield_10125`), the
+/// same field the Story builder writes to, since that is what the team's bug
+/// view surfaces — Description is left empty. `priority` and
+/// `assignee_account_id` are omitted when `None`.
 pub fn build_create_issue_body(
     project_key: &str,
     issue_type_id: &str,
     summary: &str,
-    description_adf: &Value,
+    ac_adf: &Value,
     priority: Option<&str>,
     assignee_account_id: Option<&str>,
 ) -> Value {
@@ -620,7 +623,7 @@ pub fn build_create_issue_body(
     fields.insert("project".into(), serde_json::json!({ "key": project_key }));
     fields.insert("issuetype".into(), serde_json::json!({ "id": issue_type_id }));
     fields.insert("summary".into(), serde_json::json!(summary));
-    fields.insert("description".into(), description_adf.clone());
+    fields.insert("customfield_10125".into(), ac_adf.clone());
     if let Some(p) = priority {
         fields.insert("priority".into(), serde_json::json!({ "name": p }));
     }
@@ -698,7 +701,7 @@ pub fn create_issue(
     project_key: &str,
     issue_type_id: &str,
     summary: &str,
-    description_adf: &Value,
+    ac_adf: &Value,
     priority: Option<&str>,
     assignee_account_id: Option<&str>,
 ) -> Result<CreatedIssue> {
@@ -708,7 +711,7 @@ pub fn create_issue(
         project_key,
         issue_type_id,
         summary,
-        description_adf,
+        ac_adf,
         priority,
         assignee_account_id,
     );
@@ -1333,20 +1336,22 @@ mod tests {
 
     #[test]
     fn build_create_issue_body_minimal_has_required_fields() {
-        let desc = text_to_adf("body");
-        let v = build_create_issue_body("QAT", "10001", "My bug", &desc, None, None);
+        let ac = text_to_adf("body");
+        let v = build_create_issue_body("QAT", "10001", "My bug", &ac, None, None);
         assert_eq!(v["fields"]["project"]["key"], "QAT");
         assert_eq!(v["fields"]["issuetype"]["id"], "10001");
         assert_eq!(v["fields"]["summary"], "My bug");
-        assert_eq!(v["fields"]["description"]["type"], "doc");
+        // The bug report lands in Acceptance Criteria, not Description.
+        assert_eq!(v["fields"]["customfield_10125"]["type"], "doc");
+        assert!(v["fields"].get("description").is_none());
         assert!(v["fields"].get("priority").is_none());
         assert!(v["fields"].get("assignee").is_none());
     }
 
     #[test]
     fn build_create_issue_body_includes_optional_priority_and_assignee() {
-        let desc = text_to_adf("body");
-        let v = build_create_issue_body("QAT", "10001", "s", &desc, Some("High"), Some("acc-123"));
+        let ac = text_to_adf("body");
+        let v = build_create_issue_body("QAT", "10001", "s", &ac, Some("High"), Some("acc-123"));
         assert_eq!(v["fields"]["priority"]["name"], "High");
         assert_eq!(v["fields"]["assignee"]["accountId"], "acc-123");
     }
