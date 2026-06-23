@@ -1,5 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 
 // ---------------------------------------------------------------------------
 // Backend types (mirror src-tauri/src/commands.rs — serde defaults to
@@ -26,6 +29,8 @@ interface TestCase {
 interface ChatMsg {
   role: "user" | "assistant";
   content: string;
+  /** Attached screenshots (data: URLs), shown in the user's bubble. */
+  images?: string[];
 }
 
 interface PrRef {
@@ -34,8 +39,10 @@ interface PrRef {
   title: string;
   state: string;
   url: string;
-  /** Ephemeral follow-up Q&A about this PR (in-memory only, like the summary). */
+  /** Follow-up Q&A about this PR (loaded from + persisted to the DB). */
   chat?: ChatMsg[];
+  /** Cached AI summary ("Ringkas + apa yang dites"), loaded from the DB. */
+  summary?: string;
 }
 
 interface JiraField {
@@ -229,6 +236,26 @@ function errStr(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+/** Append a small "Copy" button to `container` that copies `text` to the
+ *  clipboard. `container` should be position:relative (the button is absolute). */
+function addCopyButton(container: HTMLElement, text: string): void {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = "Copy";
+  btn.title = "Salin teks";
+  btn.addEventListener("click", () => {
+    void navigator.clipboard.writeText(text).then(
+      () => {
+        btn.textContent = "Tersalin ✓";
+        window.setTimeout(() => (btn.textContent = "Copy"), 1500);
+      },
+      () => toast("Gagal menyalin.", "error")
+    );
+  });
+  container.appendChild(btn);
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,9 +1074,12 @@ function renderPrs(): void {
       <div class="pr-review hidden"></div>
       <div class="pr-chat">
         <div class="pr-chat-log"></div>
+        <div class="pr-chat-preview hidden"></div>
         <form class="pr-chat-form">
+          <button class="pr-chat-attach" type="button" title="Lampirkan gambar">📎</button>
+          <input class="pr-chat-file" type="file" accept="image/*" hidden />
           <input class="pr-chat-input" type="text" autocomplete="off"
-            placeholder="Tanya AI soal PR ini… (mis. ada app setting-nya nggak?)" />
+            placeholder="Tanya AI soal PR ini… (boleh tempel/lampirkan gambar)" />
           <button class="btn small primary pr-chat-send" type="submit">Tanya</button>
         </form>
       </div>`;
@@ -1060,18 +1090,93 @@ function renderPrs(): void {
     });
 
     const chatLog = item.querySelector<HTMLDivElement>(".pr-chat-log")!;
-    renderPrChat(pr, chatLog);
-    item.querySelector<HTMLFormElement>(".pr-chat-form")?.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const input = item.querySelector<HTMLInputElement>(".pr-chat-input")!;
-      const q = input.value.trim();
-      if (!q) return;
-      input.value = "";
-      void askPr(pr, q, chatLog);
-    });
-
+    const input = item.querySelector<HTMLInputElement>(".pr-chat-input")!;
+    const fileInput = item.querySelector<HTMLInputElement>(".pr-chat-file")!;
+    const preview = item.querySelector<HTMLDivElement>(".pr-chat-preview")!;
+    const chatBox = item.querySelector<HTMLDivElement>(".pr-chat")!;
     const btn = item.querySelector<HTMLButtonElement>(".pr-summarize");
     const panel = item.querySelector<HTMLDivElement>(".pr-review");
+    renderPrChat(pr, chatLog);
+    void hydratePr(pr, chatLog, panel!);
+
+    // Pending screenshots for the next question (cleared after sending).
+    let pendingImages: string[] = [];
+    const showPreview = (): void => {
+      if (pendingImages.length === 0) {
+        preview.innerHTML = "";
+        show(preview, false);
+        return;
+      }
+      preview.innerHTML = pendingImages
+        .map(
+          (src, i) =>
+            `<span class="pr-chat-thumb"><img src="${src}" alt="lampiran" /><button type="button" class="pr-chat-preview-x" data-i="${i}" title="Hapus gambar">✕</button></span>`
+        )
+        .join("");
+      show(preview, true);
+      preview.querySelectorAll<HTMLButtonElement>(".pr-chat-preview-x").forEach((x) =>
+        x.addEventListener("click", () => {
+          pendingImages.splice(Number(x.dataset.i), 1);
+          showPreview();
+        })
+      );
+    };
+    const addImageFile = (file: File | null | undefined): void => {
+      if (!file || !file.type.startsWith("image/")) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        pendingImages.push(String(reader.result));
+        showPreview();
+      };
+      reader.readAsDataURL(file);
+    };
+    const addImageFiles = (files: FileList | null | undefined): void => {
+      if (!files) return;
+      for (const f of files) addImageFile(f);
+    };
+
+    item
+      .querySelector<HTMLButtonElement>(".pr-chat-attach")
+      ?.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      addImageFiles(fileInput.files);
+      fileInput.value = "";
+    });
+    input.addEventListener("paste", (e) => {
+      const items = (e as ClipboardEvent).clipboardData?.items;
+      if (!items) return;
+      let took = false;
+      for (const it of items) {
+        if (it.type.startsWith("image/")) {
+          addImageFile(it.getAsFile());
+          took = true;
+        }
+      }
+      if (took) e.preventDefault();
+    });
+    // Drag & drop image files onto the chat area.
+    chatBox.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      chatBox.classList.add("dragover");
+    });
+    chatBox.addEventListener("dragleave", () => chatBox.classList.remove("dragover"));
+    chatBox.addEventListener("drop", (e) => {
+      e.preventDefault();
+      chatBox.classList.remove("dragover");
+      addImageFiles((e as DragEvent).dataTransfer?.files);
+    });
+
+    item.querySelector<HTMLFormElement>(".pr-chat-form")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q && pendingImages.length === 0) return;
+      const imgs = pendingImages;
+      input.value = "";
+      pendingImages = [];
+      showPreview();
+      void askPr(pr, q, imgs, chatLog);
+    });
+
     btn?.addEventListener("click", () => void summarizePr(pr, btn, panel!));
     item
       .querySelector<HTMLButtonElement>(".pr-gen-tc")
@@ -1185,15 +1290,29 @@ async function summarizePr(
   panel.classList.remove("hidden");
   panel.classList.add("loading");
   panel.textContent = "Lagi baca PR & nyusun…";
+  const channel = new Channel<string>();
+  let acc = "";
+  let started = false;
+  channel.onmessage = (chunk) => {
+    if (!started) {
+      started = true;
+      panel.classList.remove("loading");
+    }
+    acc += chunk;
+    panel.innerHTML = mdToHtml(acc);
+  };
   try {
     const review = await invoke<string>("summarize_pr", {
       key,
       summary,
       repo: pr.repo,
       number: pr.number,
+      onChunk: channel,
     });
+    pr.summary = review;
     panel.classList.remove("loading");
     panel.innerHTML = mdToHtml(review);
+    addCopyButton(panel, review);
   } catch (e) {
     panel.classList.add("hidden");
     toast(errStr(e), "error");
@@ -1203,32 +1322,97 @@ async function summarizePr(
   }
 }
 
+/** Load a PR's persisted summary + chat from the DB and render them, unless the
+ *  in-memory state is already populated (e.g. a chat happened this session). */
+async function hydratePr(
+  pr: PrRef,
+  log: HTMLDivElement,
+  panel: HTMLDivElement
+): Promise<void> {
+  try {
+    const st = await invoke<{ summary: string | null; chat: ChatMsg[] }>("get_pr_state", {
+      repo: pr.repo,
+      number: pr.number,
+    });
+    if (st.summary && !pr.summary) {
+      pr.summary = st.summary;
+      panel.classList.remove("hidden", "loading");
+      panel.innerHTML = mdToHtml(st.summary);
+      addCopyButton(panel, st.summary);
+    }
+    if (st.chat.length > 0 && (pr.chat ?? []).length === 0) {
+      pr.chat = st.chat;
+      renderPrChat(pr, log);
+    }
+  } catch {
+    /* DB read is best-effort; ignore */
+  }
+}
+
 /** Render the follow-up Q&A log for one PR into its chat-log element. */
 function renderPrChat(pr: PrRef, log: HTMLDivElement): void {
   log.innerHTML = "";
   for (const msg of pr.chat ?? []) {
     const row = document.createElement("div");
     row.className = `pr-chat-msg pr-chat-${msg.role}`;
-    row.innerHTML = msg.role === "assistant" ? mdToHtml(msg.content) : esc(msg.content);
+    if (msg.role === "assistant") {
+      row.innerHTML = mdToHtml(msg.content);
+      addCopyButton(row, msg.content);
+    } else {
+      const imgs = (msg.images ?? [])
+        .map((s) => `<img class="pr-chat-img" src="${s}" alt="lampiran" />`)
+        .join("");
+      const txt = msg.content ? `<span>${esc(msg.content)}</span>` : "";
+      row.innerHTML = imgs + txt;
+    }
     log.appendChild(row);
   }
   log.scrollTop = log.scrollHeight;
 }
 
-/** Ask a follow-up question about a PR (multi-turn, grounded in the diff). */
-async function askPr(pr: PrRef, question: string, log: HTMLDivElement): Promise<void> {
+/** Ask a follow-up question about a PR (multi-turn, grounded in the diff).
+ *  `images` are data: URL screenshots attached to this question. */
+async function askPr(
+  pr: PrRef,
+  question: string,
+  images: string[],
+  log: HTMLDivElement
+): Promise<void> {
+  pr.chat = pr.chat ?? [];
+  pr.chat.push({
+    role: "user",
+    content: question,
+    images: images.length ? images : undefined,
+  });
+  renderPrChat(pr, log);
+  await streamPrAnswer(pr, images, log);
+}
+
+/** Stream the AI's answer for the last question in `pr.chat`. On failure, shows
+ *  an inline "Coba lagi" button that re-runs this same step. */
+async function streamPrAnswer(
+  pr: PrRef,
+  images: string[],
+  log: HTMLDivElement
+): Promise<void> {
   if (!detailKey) return;
   const key = detailKey;
   const summary = ticketByKey(key)?.summary || "";
-  pr.chat = pr.chat ?? [];
-  pr.chat.push({ role: "user", content: question });
-  renderPrChat(pr, log);
 
-  const pending = document.createElement("div");
-  pending.className = "pr-chat-msg pr-chat-assistant loading";
-  pending.textContent = "Lagi mikir…";
-  log.appendChild(pending);
+  const bubble = document.createElement("div");
+  bubble.className = "pr-chat-msg pr-chat-assistant loading";
+  bubble.textContent = "Lagi mikir…";
+  log.appendChild(bubble);
   log.scrollTop = log.scrollHeight;
+
+  const channel = new Channel<string>();
+  let acc = "";
+  channel.onmessage = (chunk) => {
+    acc += chunk;
+    bubble.classList.remove("loading");
+    bubble.innerHTML = mdToHtml(acc);
+    log.scrollTop = log.scrollHeight;
+  };
 
   try {
     const answer = await invoke<string>("ask_pr", {
@@ -1236,13 +1420,28 @@ async function askPr(pr: PrRef, question: string, log: HTMLDivElement): Promise<
       summary,
       repo: pr.repo,
       number: pr.number,
-      history: pr.chat,
+      history: (pr.chat ?? []).map((m) => ({ role: m.role, content: m.content })),
+      images,
+      onChunk: channel,
     });
-    pr.chat.push({ role: "assistant", content: answer });
+    pr.chat!.push({ role: "assistant", content: answer });
     renderPrChat(pr, log);
   } catch (e) {
-    pending.remove();
-    toast(errStr(e), "error");
+    bubble.remove();
+    const retry = document.createElement("div");
+    retry.className = "pr-chat-msg pr-chat-assistant error";
+    retry.innerHTML = `<span>${esc(errStr(e))}</span> `;
+    const rbtn = document.createElement("button");
+    rbtn.type = "button";
+    rbtn.className = "pr-chat-retry";
+    rbtn.textContent = "Coba lagi";
+    rbtn.addEventListener("click", () => {
+      retry.remove();
+      void streamPrAnswer(pr, images, log);
+    });
+    retry.appendChild(rbtn);
+    log.appendChild(retry);
+    log.scrollTop = log.scrollHeight;
   }
 }
 
@@ -1962,6 +2161,34 @@ function wireEvents(): void {
     renderBoard(boardTickets);
   });
 
+  // Global keyboard shortcuts: Esc closes the top open modal; Cmd/Ctrl+F
+  // focuses the board search.
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      const s = $<HTMLInputElement>("board-search");
+      s.focus();
+      s.select();
+      return;
+    }
+    if (e.key === "Escape") {
+      const overlays: Array<[string, () => void]> = [
+        ["bugwriter-overlay", closeBugWriter],
+        ["ticket-overlay", closeTicketBuilder],
+        ["summary-overlay", closeSummary],
+        ["settings-overlay", closeSettings],
+        ["detail-overlay", closeDetail],
+        ["transition-overlay", closeTransitionPicker],
+      ];
+      for (const [id, close] of overlays) {
+        if (!$(id).classList.contains("hidden")) {
+          close();
+          return;
+        }
+      }
+    }
+  });
+
   // External links (e.g. "where to get a token") open in the system browser,
   // never inside the app's own webview.
   document.body.addEventListener("click", (e) => {
@@ -1975,6 +2202,7 @@ function wireEvents(): void {
   $("theme-btn").addEventListener("click", toggleTheme);
 
   $("gear-btn").addEventListener("click", () => void openSettings());
+  $("update-check").addEventListener("click", () => void checkForUpdate(true));
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-cancel").addEventListener("click", closeSettings);
   $("settings-form").addEventListener("submit", (e) => {
@@ -2063,10 +2291,40 @@ function wireEvents(): void {
   wireTicketBuilder();
 }
 
+/** Check GitHub for a newer release; if found, offer to download + install +
+ *  restart. On the silent startup check (`manual=false`) offline / no-manifest
+ *  errors are swallowed; the manual "Cek update" button (`manual=true`) reports
+ *  "already up to date" and surfaces errors as toasts. */
+async function checkForUpdate(manual = false): Promise<void> {
+  try {
+    if (manual) toast("Mengecek update…");
+    const update = await check();
+    if (!update) {
+      if (manual) toast("Kamu sudah pakai versi terbaru. 🎉");
+      return;
+    }
+    const ok = await confirmDialog(
+      `Ada versi baru QA Cockpit (v${update.version}). Update sekarang?`
+    );
+    if (!ok) return;
+    toast("Mengunduh update…");
+    await update.downloadAndInstall();
+    toast("Update selesai — merestart aplikasi…");
+    await relaunch();
+  } catch (e) {
+    if (manual) toast(`Gagal cek update: ${errStr(e)}`, "error");
+    else console.error("Update check failed:", e);
+  }
+}
+
 async function init(): Promise<void> {
   initTheme();
   wireEvents();
   await refreshBoard();
+  getVersion()
+    .then((v) => ($("app-version").textContent = `v${v}`))
+    .catch(() => ($("app-version").textContent = ""));
+  void checkForUpdate();
 }
 
 window.addEventListener("DOMContentLoaded", () => {

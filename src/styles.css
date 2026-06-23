@@ -649,6 +649,21 @@ h2 {
   margin-top: 6px;
 }
 
+.settings-about {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-version {
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
 /* Confirm + pick-transition modals (reuse .overlay) */
 .confirm-panel {
   width: 100%;
@@ -1226,6 +1241,114 @@ h2 {
 
 .pr-chat-send {
   flex: none;
+}
+
+.pr-chat-attach {
+  flex: none;
+  width: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.pr-chat-attach:hover {
+  border-color: var(--accent);
+}
+
+.pr-chat-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pr-chat-thumb {
+  position: relative;
+  display: inline-block;
+}
+
+.pr-chat-thumb img {
+  max-height: 90px;
+  max-width: 140px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.pr-chat-preview-x {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: none;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pr-chat.dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.pr-chat-msg.error {
+  color: var(--red);
+}
+
+.pr-chat-retry {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.pr-chat-retry:hover {
+  border-color: var(--accent);
+}
+
+/* Copy button overlaid on AI output panels (summary + chat answers) */
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.pr-review,
+.pr-chat-assistant {
+  position: relative;
+}
+
+.pr-review:hover .copy-btn,
+.pr-chat-assistant:hover .copy-btn {
+  opacity: 1;
+}
+
+.pr-chat-img {
+  max-width: 100%;
+  max-height: 220px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  display: block;
 }
 
 /* Rendered markdown inside AI panels */

@@ -50,6 +50,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -94,6 +96,7 @@ pub fn run() {
             commands::list_ticket_prs,
             commands::summarize_pr,
             commands::ask_pr,
+            commands::get_pr_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -75,3 +75,25 @@ CREATE TABLE IF NOT EXISTS test_cases (
     created_at TEXT,
     notes TEXT
 );
+
+-- Cached AI summary for a PR (the "Ringkas + apa yang dites" output), keyed by
+-- the PR itself so it survives closing the ticket modal.
+CREATE TABLE IF NOT EXISTS pr_summaries (
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    body TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (repo, number)
+);
+
+-- Persisted follow-up Q&A chat for a PR. `images` is a JSON array of data: URLs
+-- attached to the message (empty array when none).
+CREATE TABLE IF NOT EXISTS pr_chat (
+    id INTEGER PRIMARY KEY,
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    images TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT
+);

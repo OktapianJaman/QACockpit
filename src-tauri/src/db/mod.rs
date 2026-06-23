@@ -363,6 +363,83 @@ pub fn delete_test_case(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// One persisted PR follow-up chat message. `images` are data: URLs attached to
+/// the message (empty when none).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PrChatMsg {
+    pub role: String,
+    pub content: String,
+    pub images: Vec<String>,
+}
+
+/// Upsert the cached AI summary for a PR.
+pub fn set_pr_summary(conn: &Connection, repo: &str, number: i64, body: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pr_summaries (repo, number, body, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(repo, number) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+        rusqlite::params![repo, number, body, chrono::Local::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Read the cached AI summary for a PR, if any.
+pub fn get_pr_summary(conn: &Connection, repo: &str, number: i64) -> Result<Option<String>> {
+    let mut stmt =
+        conn.prepare("SELECT body FROM pr_summaries WHERE repo = ?1 AND number = ?2")?;
+    let mut rows = stmt.query(rusqlite::params![repo, number])?;
+    if let Some(row) = rows.next()? {
+        Ok(row.get::<_, Option<String>>(0)?)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Append one message to a PR's persisted chat.
+pub fn add_pr_chat(
+    conn: &Connection,
+    repo: &str,
+    number: i64,
+    role: &str,
+    content: &str,
+    images: &[String],
+) -> Result<()> {
+    let images_json = serde_json::to_string(images).unwrap_or_else(|_| "[]".to_string());
+    conn.execute(
+        "INSERT INTO pr_chat (repo, number, role, content, images, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            repo,
+            number,
+            role,
+            content,
+            images_json,
+            chrono::Local::now().to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+/// List a PR's persisted chat in chronological order.
+pub fn list_pr_chat(conn: &Connection, repo: &str, number: i64) -> Result<Vec<PrChatMsg>> {
+    let mut stmt = conn.prepare(
+        "SELECT role, content, images FROM pr_chat WHERE repo = ?1 AND number = ?2 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![repo, number], |row| {
+        let images_json: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+        let images: Vec<String> = serde_json::from_str(&images_json).unwrap_or_default();
+        Ok(PrChatMsg {
+            role: row.get(0)?,
+            content: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            images,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

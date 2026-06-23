@@ -23,7 +23,7 @@ pub const GEMINI_MODEL: &str = "gemini-2.5-flash";
 const MAX_BLOCKS: usize = 20;
 
 /// Friendly Indonesian message shown when the AI cannot be reached.
-const AI_UNAVAILABLE: &str =
+pub const AI_UNAVAILABLE: &str =
     "(AI tidak tersedia — cek API key Gemini di Settings)";
 
 /// Where to send a chat-completion request: the Gemini endpoint URL, the Bearer
@@ -328,11 +328,6 @@ pub fn pr_review_prompt(key: &str, summary: &str, diff: &str) -> String {
     )
 }
 
-/// Convenience: ask the local model to review a PR diff for a ticket.
-pub fn review_pr(target: &AiTarget, key: &str, summary: &str, diff: &str) -> String {
-    complete(target, &pr_review_prompt(key, summary, diff))
-}
-
 /// Build a follow-up Q&A prompt: the model is grounded in the PR diff + ticket
 /// summary and answers the QA engineer's questions. `history` is the running
 /// conversation as `(role, content)` pairs where role is "user" or "assistant";
@@ -370,16 +365,6 @@ pub fn pr_chat_prompt(key: &str, summary: &str, diff: &str, history: &[(String, 
     )
 }
 
-/// Convenience: answer a QA follow-up question about a PR, grounded in its diff.
-pub fn answer_pr(
-    target: &AiTarget,
-    key: &str,
-    summary: &str,
-    diff: &str,
-    history: &[(String, String)],
-) -> String {
-    complete(target, &pr_chat_prompt(key, summary, diff, history))
-}
 
 /// Build an Indonesian prompt asking Gemma, as a QA assistant, to DRAFT test
 /// cases from a PR diff. The Jira ticket is often empty, so the test cases must
@@ -437,6 +422,80 @@ pub fn generate_test_cases_from_diff(
 /// erroring or panicking.
 pub fn complete(target: &AiTarget, prompt: &str) -> String {
     post_chat(target, build_chat_request(&target.model, prompt))
+}
+
+/// Stream a chat completion: POST `body` with `stream: true`, parse the SSE
+/// `data:` lines, invoke `on_delta` for each incremental content chunk, and
+/// return the full accumulated text. Same graceful-degrade contract as
+/// [`post_chat`] — any failure returns [`AI_UNAVAILABLE`] (without panicking).
+pub fn stream_chat(target: &AiTarget, mut body: Value, mut on_delta: impl FnMut(&str)) -> String {
+    use std::io::BufRead;
+
+    body["stream"] = json!(true);
+    let client = crate::net::client();
+    let mut req = client.post(&target.url).json(&body);
+    if let Some(key) = &target.api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = match req.send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return AI_UNAVAILABLE.to_string(),
+    };
+
+    let mut full = String::new();
+    for line in std::io::BufReader::new(resp).lines() {
+        let Ok(line) = line else { break };
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let data = data.trim();
+        if data == "[DONE]" {
+            break;
+        }
+        if data.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(data) {
+            if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                if !delta.is_empty() {
+                    full.push_str(delta);
+                    on_delta(delta);
+                }
+            }
+        }
+    }
+
+    if full.is_empty() {
+        AI_UNAVAILABLE.to_string()
+    } else {
+        full
+    }
+}
+
+/// Like [`build_vision_request`] but carries zero or more images. With an empty
+/// slice the `content` is a plain string (identical to [`build_chat_request`]);
+/// otherwise it is a multimodal array of one `text` part plus one `image_url`
+/// part per image. Bare base64 strings are wrapped into PNG data URLs.
+pub fn build_vision_request_multi(model: &str, prompt: &str, images: &[String]) -> Value {
+    let content = if images.is_empty() {
+        json!(prompt)
+    } else {
+        let mut parts = vec![json!({ "type": "text", "text": prompt })];
+        for img in images {
+            let url = if img.starts_with("data:") {
+                img.clone()
+            } else {
+                format!("data:image/png;base64,{img}")
+            };
+            parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+        }
+        json!(parts)
+    };
+    json!({
+        "model": model,
+        "messages": [ { "role": "user", "content": content } ],
+        "temperature": 0.3,
+        "stream": false
+    })
 }
 
 /// POST a pre-built OpenAI-compatible body to `target` and return the reply.

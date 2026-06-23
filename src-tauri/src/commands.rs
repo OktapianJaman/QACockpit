@@ -1564,7 +1564,9 @@ pub async fn list_ticket_prs(
     .await
 }
 
-/// Fetch a PR's diff and ask the model to summarize it + "what to test".
+/// Fetch a PR's diff and ask the model to summarize it + "what to test",
+/// streaming the answer to the frontend chunk-by-chunk via `on_chunk`. Returns
+/// the full text once complete (also persisted as the PR summary by the caller).
 #[tauri::command]
 pub async fn summarize_pr(
     state: tauri::State<'_, AppState>,
@@ -1572,6 +1574,7 @@ pub async fn summarize_pr(
     summary: String,
     repo: String,
     number: i64,
+    on_chunk: tauri::ipc::Channel<String>,
 ) -> Result<String, String> {
     with_conn(&state, move |conn| {
         let cfg = load_config(&conn)?;
@@ -1580,7 +1583,40 @@ pub async fn summarize_pr(
         }
         let diff = integrations::github::fetch_pr_diff(&cfg.github_token, &repo, number)
             .map_err(|e| e.to_string())?;
-        Ok(crate::ai::gemma::review_pr(&ai_target(&cfg), &key, &summary, &diff))
+        let target = ai_target(&cfg);
+        let prompt = crate::ai::gemma::pr_review_prompt(&key, &summary, &diff);
+        let body = crate::ai::gemma::build_chat_request(&target.model, &prompt);
+        let full = crate::ai::gemma::stream_chat(&target, body, |delta| {
+            let _ = on_chunk.send(delta.to_string());
+        });
+        if full == crate::ai::gemma::AI_UNAVAILABLE {
+            return Err(full);
+        }
+        let _ = db::set_pr_summary(&conn, &repo, number, &full);
+        Ok(full)
+    })
+    .await
+}
+
+/// The persisted AI state for one PR: cached summary + chat history. Loaded when
+/// a PR is rendered so the summary and follow-up Q&A survive closing the modal.
+#[derive(serde::Serialize)]
+pub struct PrState {
+    pub summary: Option<String>,
+    pub chat: Vec<db::PrChatMsg>,
+}
+
+/// Load the cached summary + persisted chat for a PR.
+#[tauri::command]
+pub async fn get_pr_state(
+    state: tauri::State<'_, AppState>,
+    repo: String,
+    number: i64,
+) -> Result<PrState, String> {
+    with_conn(&state, move |conn| {
+        let summary = db::get_pr_summary(&conn, &repo, number).map_err(|e| e.to_string())?;
+        let chat = db::list_pr_chat(&conn, &repo, number).map_err(|e| e.to_string())?;
+        Ok(PrState { summary, chat })
     })
     .await
 }
@@ -1592,9 +1628,10 @@ pub struct ChatMsg {
     pub content: String,
 }
 
-/// Answer a QA follow-up question about a PR, grounded in its diff. `history` is
-/// the full running conversation (last entry = the new question); the diff is
-/// re-fetched each turn, same as [`summarize_pr`].
+/// Answer a QA follow-up question about a PR, grounded in its diff, streaming the
+/// answer via `on_chunk`. `history` is the full running conversation (last entry
+/// = the new question); `images` are screenshots attached to the new question.
+/// The diff is re-fetched each turn, same as [`summarize_pr`].
 #[tauri::command]
 pub async fn ask_pr(
     state: tauri::State<'_, AppState>,
@@ -1603,6 +1640,8 @@ pub async fn ask_pr(
     repo: String,
     number: i64,
     history: Vec<ChatMsg>,
+    images: Vec<String>,
+    on_chunk: tauri::ipc::Channel<String>,
 ) -> Result<String, String> {
     with_conn(&state, move |conn| {
         let cfg = load_config(&conn)?;
@@ -1613,7 +1652,22 @@ pub async fn ask_pr(
             .map_err(|e| e.to_string())?;
         let turns: Vec<(String, String)> =
             history.into_iter().map(|m| (m.role, m.content)).collect();
-        Ok(crate::ai::gemma::answer_pr(&ai_target(&cfg), &key, &summary, &diff, &turns))
+        let target = ai_target(&cfg);
+        let prompt = crate::ai::gemma::pr_chat_prompt(&key, &summary, &diff, &turns);
+        let body = crate::ai::gemma::build_vision_request_multi(&target.model, &prompt, &images);
+        let full = crate::ai::gemma::stream_chat(&target, body, |delta| {
+            let _ = on_chunk.send(delta.to_string());
+        });
+        if full == crate::ai::gemma::AI_UNAVAILABLE {
+            return Err(full);
+        }
+        // Persist the turn (the new question + its answer) so the chat survives
+        // closing the modal. `turns.last()` is the just-asked question.
+        if let Some((role, content)) = turns.last() {
+            let _ = db::add_pr_chat(&conn, &repo, number, role, content, &images);
+        }
+        let _ = db::add_pr_chat(&conn, &repo, number, "assistant", &full, &[]);
+        Ok(full)
     })
     .await
 }
