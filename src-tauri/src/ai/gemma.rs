@@ -638,18 +638,18 @@ pub fn test_connection(target: &AiTarget) -> Result<(), String> {
 pub fn generate_bug_report(
     target: &AiTarget,
     text: &str,
-    image_base64: Option<&str>,
+    images: &[String],
     language: &str,
     sections: &[String],
 ) -> (String, String, String) {
     let system = build_bug_prompt(language, sections);
     let user = if text.trim().is_empty() {
-        "Generate a bug report from the attached image.".to_string()
+        "Generate a bug report from the attached image(s).".to_string()
     } else {
         format!("User description:\n{}", text.trim())
     };
     let combined = format!("{system}\n\n{user}");
-    let raw = post_chat(target, build_vision_request(&target.model, &combined, image_base64));
+    let raw = post_chat(target, build_vision_request_multi(&target.model, &combined, images));
     let (title, body) = parse_title_and_body(&raw);
     (title, body, raw)
 }
@@ -768,6 +768,10 @@ fn strip_title_prefix(line: &str) -> Option<&str> {
 /// (`text` + `image_url`); a bare base64 string is wrapped into a PNG data URL,
 /// while an existing `data:` URL is passed through. Without an image, `content`
 /// is a plain string (identical to [`build_chat_request`]).
+///
+/// Superseded for callers by [`build_vision_request_multi`]; retained (and
+/// exercised by tests) as the single-image reference path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_vision_request(model: &str, prompt: &str, image_base64: Option<&str>) -> Value {
     let content = match image_base64 {
         Some(img) => {

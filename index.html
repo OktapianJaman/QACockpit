@@ -232,14 +232,17 @@
             placeholder="mis. pas klik Place Order di alamat tersimpan, muncul error 500…"></textarea>
         </label>
 
-        <label class="bw-label">Screenshot <span class="opt">(opsional)</span></label>
+        <label class="bw-label">Screenshot <span class="opt">(opsional — bisa lebih dari satu)</span></label>
+        <div id="bw-thumbs" class="bw-thumbs hidden"></div>
         <div id="bw-drop" class="bw-drop" tabindex="0">
-          <input id="bw-file" type="file" accept="image/*" hidden />
-          <img id="bw-preview" class="bw-preview hidden" alt="preview" />
+          <input id="bw-file" type="file" accept="image/*" multiple hidden />
           <div id="bw-drop-hint" class="bw-drop-hint">
             <strong>Klik</strong>, drag, atau <strong>paste (Ctrl+V)</strong> screenshot
           </div>
-          <button id="bw-clear-img" class="btn small bw-clear hidden" type="button">Hapus gambar</button>
+        </div>
+        <div class="bw-capture-row">
+          <button id="bw-snip" class="btn small" type="button">✂️ Snip area layar</button>
+          <button id="bw-record" class="btn small hidden" type="button">⏺ Rekam layar</button>
         </div>
 
         <div class="bw-opts">
@@ -392,6 +395,26 @@
             <button type="submit" class="btn primary">Simpan</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Screenshot annotator (draw boxes / arrows / redact, then save) -->
+    <div id="annotate-overlay" class="overlay hidden">
+      <div class="annotate-panel card">
+        <div class="annotate-toolbar">
+          <button id="ann-tool-rect" class="btn small active" type="button">▭ Kotak</button>
+          <button id="ann-tool-arrow" class="btn small" type="button">↗ Panah</button>
+          <button id="ann-tool-redact" class="btn small" type="button">▮ Sensor</button>
+          <span class="annotate-sep"></span>
+          <button id="ann-undo" class="btn small" type="button">↶ Undo</button>
+          <button id="ann-clear" class="btn small" type="button">Bersihkan</button>
+          <span class="annotate-spacer"></span>
+          <button id="ann-cancel" class="btn small" type="button">Batal</button>
+          <button id="ann-save" class="btn small primary" type="button">Simpan anotasi</button>
+        </div>
+        <div class="annotate-canvas-wrap">
+          <canvas id="ann-canvas"></canvas>
+        </div>
       </div>
     </div>
   </body>

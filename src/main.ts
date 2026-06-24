@@ -4,277 +4,28 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 
-// ---------------------------------------------------------------------------
-// Backend types (mirror src-tauri/src/commands.rs — serde defaults to
-// snake_case Rust field names, so match them exactly).
-// ---------------------------------------------------------------------------
-
-interface BoardTicket {
-  key: string;
-  summary: string;
-  status: string;
-  story_points: number | null;
-}
-
-interface TestCase {
-  id: number;
-  ticket_key: string;
-  title: string;
-  steps: string;
-  expected: string;
-  status: string;
-  notes: string;
-}
-
-interface ChatMsg {
-  role: "user" | "assistant";
-  content: string;
-  /** Attached screenshots (data: URLs), shown in the user's bubble. */
-  images?: string[];
-}
-
-interface PrRef {
-  number: number;
-  repo: string;
-  title: string;
-  state: string;
-  url: string;
-  /** Follow-up Q&A about this PR (loaded from + persisted to the DB). */
-  chat?: ChatMsg[];
-  /** Cached AI summary ("Ringkas + apa yang dites"), loaded from the DB. */
-  summary?: string;
-}
-
-interface JiraField {
-  id: string;
-  name: string;
-}
-
-interface JiraProject {
-  key: string;
-  name: string;
-}
-
-interface JiraUser {
-  account_id: string;
-  display_name: string;
-}
-
-interface JiraTransition {
-  id: string;
-  name: string;
-  to_status: string;
-}
-
-interface AppConfig {
-  jira_base_url: string;
-  jira_email: string;
-  jira_token: string;
-  jira_story_point_field: string;
-  jira_project: string;
-  jira_assignee: string;
-  jira_sprint_scope: string;
-  github_token: string;
-  gemini_api_key: string;
-  ai_language: string;
-}
-
-const CONFIG_KEYS: (keyof AppConfig)[] = [
-  "jira_base_url",
-  "jira_email",
-  "jira_token",
-  "jira_story_point_field",
-  "jira_project",
-  "jira_assignee",
-  "jira_sprint_scope",
-  "github_token",
-  "gemini_api_key",
-  "ai_language",
-];
-
-/** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */
-const KNOWN_REPOS = ["tr8team/gotradeindoapp", "tr8team/tradecharlieflutter"];
-
-// ---------------------------------------------------------------------------
-// DOM helpers
-// ---------------------------------------------------------------------------
-
-function $<T extends HTMLElement = HTMLElement>(id: string): T {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`element #${id} tidak ditemukan`);
-  return el as T;
-}
-
-function show(el: HTMLElement, visible: boolean): void {
-  el.classList.toggle("hidden", !visible);
-}
-
-// --- Theme (light / dark), persisted in localStorage ---
-type Theme = "dark" | "light";
-const THEME_KEY = "qacockpit-theme";
-
-function applyTheme(theme: Theme): void {
-  document.documentElement.dataset.theme = theme === "light" ? "light" : "";
-  const btn = document.getElementById("theme-btn");
-  if (btn) {
-    // The icon shows the theme you'd switch TO.
-    btn.textContent = theme === "light" ? "🌙" : "☀️";
-    btn.title = theme === "light" ? "Ganti ke gelap" : "Ganti ke terang";
-  }
-}
-
-function currentTheme(): Theme {
-  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
-}
-
-function initTheme(): void {
-  const saved = (localStorage.getItem(THEME_KEY) as Theme | null) ?? "dark";
-  applyTheme(saved);
-}
-
-function toggleTheme(): void {
-  const next: Theme = currentTheme() === "light" ? "dark" : "light";
-  localStorage.setItem(THEME_KEY, next);
-  applyTheme(next);
-}
-
-/** Escape text destined for innerHTML interpolation. */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/** Inline markdown (on already-escaped text): `code`, **bold**, *italic*. */
-function mdInline(s: string): string {
-  return s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-}
-
-/**
- * Render AI markdown as safe HTML (escape FIRST, then format). Handles
- * headings (#..######), horizontal rules (---), ordered/unordered lists,
- * blank-line paragraphs, and inline code/bold/italic. Nested indentation is
- * flattened (good enough for AI summaries).
- */
-function mdToHtml(src: string): string {
-  const lines = esc(src).split("\n");
-  const out: string[] = [];
-  let list: "ul" | "ol" | null = null;
-  const closeList = (): void => {
-    if (list) {
-      out.push(`</${list}>`);
-      list = null;
-    }
-  };
-  for (const raw of lines) {
-    const line = raw.trim();
-    let m: RegExpMatchArray | null;
-    if (/^---+$/.test(line) || /^\*\*\*+$/.test(line)) {
-      closeList();
-      out.push("<hr>");
-    } else if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-      closeList();
-      const lvl = Math.min(m[1].length + 2, 6); // # -> h3, ## -> h4, …
-      out.push(`<h${lvl} class="md-h">${mdInline(m[2])}</h${lvl}>`);
-    } else if ((m = line.match(/^\d+[.)]\s+(.*)$/))) {
-      if (list !== "ol") {
-        closeList();
-        out.push("<ol>");
-        list = "ol";
-      }
-      out.push(`<li>${mdInline(m[1])}</li>`);
-    } else if ((m = line.match(/^[-*]\s+(.*)$/))) {
-      if (list !== "ul") {
-        closeList();
-        out.push("<ul>");
-        list = "ul";
-      }
-      out.push(`<li>${mdInline(m[1])}</li>`);
-    } else if (line === "") {
-      closeList();
-    } else {
-      closeList();
-      out.push(`<p>${mdInline(line)}</p>`);
-    }
-  }
-  closeList();
-  return out.join("");
-}
-
-// ---------------------------------------------------------------------------
-// Formatting
-// ---------------------------------------------------------------------------
-
-/** Round a points value to 1 decimal place, dropping a trailing .0. */
-function fmtPoints(n: number): string {
-  const r = Math.round(n * 10) / 10;
-  return Number.isInteger(r) ? String(r) : r.toFixed(1);
-}
-
-// ---------------------------------------------------------------------------
-// Toast / errors
-// ---------------------------------------------------------------------------
-
-let toastTimer: number | undefined;
-
-function toast(msg: string, kind: "info" | "error" = "info"): void {
-  const el = $("toast");
-  el.textContent = msg;
-  el.classList.remove("error", "info");
-  el.classList.add(kind);
-  show(el, true);
-  if (toastTimer) window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => show(el, false), kind === "error" ? 6000 : 3500);
-}
-
-function errStr(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  return String(e);
-}
-
-/** Append a small "Copy" button to `container` that copies `text` to the
- *  clipboard. `container` should be position:relative (the button is absolute). */
-function addCopyButton(container: HTMLElement, text: string): void {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "copy-btn";
-  btn.textContent = "Copy";
-  btn.title = "Salin teks";
-  btn.addEventListener("click", () => {
-    void navigator.clipboard.writeText(text).then(
-      () => {
-        btn.textContent = "Tersalin ✓";
-        window.setTimeout(() => (btn.textContent = "Copy"), 1500);
-      },
-      () => toast("Gagal menyalin.", "error")
-    );
-  });
-  container.appendChild(btn);
-}
+import type {
+  BoardTicket,
+  TestCase,
+  ChatMsg,
+  PrRef,
+  JiraField,
+  JiraProject,
+  JiraUser,
+  JiraTransition,
+  AppConfig,
+} from "./types";
+import { CONFIG_KEYS, KNOWN_REPOS } from "./constants";
+import { esc, mdInline, mdToHtml } from "./markdown";
+import { fmtPoints, pointsLabel } from "./format";
+import { displayColumn, orderedColumns } from "./board-logic";
+import { $, show, toast, errStr, addCopyButton, initTheme, toggleTheme } from "./dom";
+import { wireBugWriter, closeBugWriter } from "./bugwriter";
+import { wireAnnotator, cancelAnnotator } from "./annotate";
 
 // ---------------------------------------------------------------------------
 // Kanban board
 // ---------------------------------------------------------------------------
-
-// Preferred left-to-right column order. A status fills a slot if, case-
-// insensitive, it equals or contains the keyword. Order matters: more specific
-// keywords (e.g. "qa in progress") must come before broader ones ("in progress").
-const STATUS_ORDER = [
-  "to do",
-  "ready for qa",
-  "today",
-  "qa in progress",
-  "in progress",
-  "qa passed",
-  "qa failed",
-  "done",
-];
 
 let boardTickets: BoardTicket[] = [];
 let boardSearch = "";
@@ -287,48 +38,6 @@ let aiLanguage = "Indonesia";
 let sprintScope = "";
 // Key of the card currently being dragged between columns (null = none).
 let draggingKey: string | null = null;
-
-/** Rank a status by the preferred order; unmatched statuses rank last. */
-function statusRank(status: string): number {
-  const s = status.toLowerCase();
-  for (let i = 0; i < STATUS_ORDER.length; i++) {
-    const kw = STATUS_ORDER[i];
-    if (s === kw || s.includes(kw)) return i;
-  }
-  return STATUS_ORDER.length;
-}
-
-function pointsLabel(pts: number | null): string {
-  return pts == null ? "— pts" : `${fmtPoints(pts)} pts`;
-}
-
-// Terminal/closed statuses collapse into a single "Done" column.
-const DONE_KEYWORDS = ["done", "passed", "closed", "complete", "resolved", "selesai"];
-
-/** Map a raw Jira status to its display column — terminal ones → "Done". */
-function displayColumn(status: string): string {
-  const s = status.toLowerCase();
-  return DONE_KEYWORDS.some((k) => s.includes(k)) ? "Done" : status;
-}
-
-// Canonical QA columns that always render — even with zero tickets — so they're
-// always available as drag-and-drop targets. A status already present (any case)
-// keeps its real Jira name; missing ones are added from here.
-const ALWAYS_COLUMNS = ["Ready for QA", "Today", "QA In Progress", "Done"];
-
-/** DISPLAY columns to render: those present + the always-on QA columns, deduped
- *  case-insensitively, ordered by preferred sequence then alpha. */
-function orderedColumns(tickets: BoardTicket[]): string[] {
-  const cols = new Set(tickets.map((t) => displayColumn(t.status)).filter(Boolean));
-  const lower = new Set([...cols].map((c) => c.toLowerCase()));
-  for (const c of ALWAYS_COLUMNS) {
-    if (!lower.has(c.toLowerCase())) cols.add(c);
-  }
-  return [...cols].sort((a, b) => {
-    const r = statusRank(a) - statusRank(b);
-    return r !== 0 ? r : a.localeCompare(b);
-  });
-}
 
 /** Build one card (click → detail; inline points; "pindah" → transition picker).
  *  Shows its real Jira status (since a column may merge several statuses). */
@@ -1578,6 +1287,16 @@ async function openSettings(): Promise<void> {
       if (JIRA_DROPDOWN_KEYS.includes(k)) continue; // seeded via dedicated helpers
       ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
     }
+    // Secrets are never returned by the backend; show a hint when one is saved
+    // so the empty field doesn't read as "no token". Leaving it blank on save
+    // keeps the stored token (only a typed value replaces it).
+    const savedHint = (id: string, present: boolean | undefined): void => {
+      const el = $(id) as HTMLInputElement;
+      el.placeholder = present ? "•••••••• (tersimpan — isi untuk ganti)" : "••••••••";
+    };
+    savedHint("cfg-jira_token", cfg.has_jira_token);
+    savedHint("cfg-github_token", cfg.has_github_token);
+    savedHint("cfg-gemini_api_key", cfg.has_gemini_key);
     seedFieldDropdown(cfg.jira_story_point_field ?? "");
     seedProjectDropdown(cfg.jira_project ?? "");
     seedAssigneeDropdown(cfg.jira_assignee ?? "");
@@ -1591,7 +1310,7 @@ async function openSettings(): Promise<void> {
   // to click "Muat dari Jira" every time they open Settings.
   try {
     const cfg = await invoke<AppConfig>("get_config");
-    if (cfg.jira_base_url && cfg.jira_email && cfg.jira_token) {
+    if (cfg.jira_base_url && cfg.jira_email && cfg.has_jira_token) {
       await loadFromJira();
     }
   } catch {
@@ -1920,263 +1639,6 @@ function wireSummary(): void {
   $("sum-generate").addEventListener("click", () => void generateSummary());
 }
 
-// ---------------------------------------------------------------------------
-// Bug Writer
-// ---------------------------------------------------------------------------
-
-// The attached screenshot as a data URL (null = none).
-let bwImage: string | null = null;
-
-interface BugReport {
-  title: string;
-  body: string;
-  raw: string;
-}
-interface CreatedIssue {
-  key: string;
-  url: string;
-}
-
-/** Read an image File/Blob into a data-URL string. */
-function fileToDataUrl(file: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("gagal baca gambar"));
-    reader.readAsDataURL(file);
-  });
-}
-
-function setBwImage(dataUrl: string): void {
-  bwImage = dataUrl;
-  const img = $("bw-preview") as HTMLImageElement;
-  img.src = dataUrl;
-  show(img, true);
-  show($("bw-drop-hint"), false);
-  show($("bw-clear-img"), true);
-}
-
-function clearBwImage(): void {
-  bwImage = null;
-  ($("bw-file") as HTMLInputElement).value = "";
-  show($("bw-preview"), false);
-  show($("bw-drop-hint"), true);
-  show($("bw-clear-img"), false);
-}
-
-/** Accept the first image from a File list / DataTransfer items. */
-async function acceptBwImageFrom(files: FileList | null): Promise<void> {
-  const file = files && Array.from(files).find((f) => f.type.startsWith("image/"));
-  if (!file) return;
-  try {
-    setBwImage(await fileToDataUrl(file));
-  } catch (e) {
-    toast(`Gagal baca gambar: ${errStr(e)}`, "error");
-  }
-}
-
-/** Fill the Bug Writer project dropdown (defaulting to the configured project). */
-async function populateBwProjects(): Promise<void> {
-  const sel = $("bw-project") as HTMLSelectElement;
-  try {
-    const cfg = await invoke<AppConfig>("get_config");
-    const projects = await invoke<JiraProject[]>("list_jira_projects");
-    const saved = cfg.jira_project ?? "";
-    sel.innerHTML = projects
-      .map(
-        (p) =>
-          `<option value="${esc(p.key)}"${p.key === saved ? " selected" : ""}>${esc(p.key)} — ${esc(p.name)}</option>`
-      )
-      .join("");
-    await loadBwAssignees(sel.value);
-  } catch (e) {
-    sel.innerHTML = `<option value="">(cek kredensial Jira di Settings)</option>`;
-    toast(`Gagal muat project Jira: ${errStr(e)}`, "error");
-  }
-}
-
-/** Repopulate the Bug Writer assignee select for a project. */
-async function loadBwAssignees(project: string): Promise<void> {
-  const sel = $("bw-assignee") as HTMLSelectElement;
-  try {
-    const users = await invoke<JiraUser[]>("list_jira_assignees", { project });
-    const opts = [`<option value="" selected>(tidak di-assign)</option>`];
-    for (const u of users) {
-      opts.push(`<option value="${esc(u.account_id)}">${esc(u.display_name)}</option>`);
-    }
-    sel.innerHTML = opts.join("");
-  } catch {
-    sel.innerHTML = `<option value="">(tidak di-assign)</option>`;
-  }
-}
-
-function openBugWriter(): void {
-  // Reset to a clean input state every open.
-  ($("bw-text") as HTMLTextAreaElement).value = "";
-  clearBwImage();
-  show($("bw-result"), false);
-  show($("bugwriter-overlay"), true);
-  // Default the output language to the global AI language (still overridable here).
-  void invoke<AppConfig>("get_config")
-    .then((cfg) => {
-      if (cfg.ai_language) ($("bw-language") as HTMLSelectElement).value = cfg.ai_language;
-    })
-    .catch(() => {});
-  void populateBwProjects();
-}
-
-function closeBugWriter(): void {
-  show($("bugwriter-overlay"), false);
-}
-
-/** Collect the checked section keys (in display order). */
-function bwSelectedSections(): string[] {
-  return Array.from(
-    $("bugwriter-overlay").querySelectorAll<HTMLInputElement>(
-      ".bw-sections input[type=checkbox]:checked"
-    )
-  ).map((c) => c.value);
-}
-
-async function generateBug(): Promise<void> {
-  const text = ($("bw-text") as HTMLTextAreaElement).value;
-  if (!text.trim() && !bwImage) {
-    toast("Isi deskripsi bug atau lampirkan screenshot dulu.", "error");
-    return;
-  }
-  const sections = bwSelectedSections();
-  if (sections.length === 0) {
-    toast("Pilih minimal satu section.", "error");
-    return;
-  }
-  const language = ($("bw-language") as HTMLSelectElement).value;
-  const btn = $<HTMLButtonElement>("bw-generate");
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.classList.add("busy");
-  btn.textContent = "Generating…";
-  try {
-    const report = await invoke<BugReport>("generate_bug_report", {
-      text,
-      imageBase64: bwImage ?? undefined,
-      language,
-      sections,
-    });
-    ($("bw-title") as HTMLInputElement).value = report.title;
-    ($("bw-body") as HTMLTextAreaElement).value = report.body;
-    show($("bw-result"), true);
-    $("bw-result").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  } catch (e) {
-    toast(`Gagal generate: ${errStr(e)}`, "error");
-  } finally {
-    btn.disabled = false;
-    btn.classList.remove("busy");
-    btn.textContent = prev;
-  }
-}
-
-async function createBug(): Promise<void> {
-  const projectKey = ($("bw-project") as HTMLSelectElement).value.trim();
-  const summary = ($("bw-title") as HTMLInputElement).value.trim();
-  const body = ($("bw-body") as HTMLTextAreaElement).value;
-  const priority = ($("bw-priority") as HTMLSelectElement).value || undefined;
-  const assigneeId = ($("bw-assignee") as HTMLSelectElement).value || undefined;
-  if (!projectKey) {
-    toast("Pilih project Jira dulu.", "error");
-    return;
-  }
-  if (!summary) {
-    toast("Title bug nggak boleh kosong.", "error");
-    return;
-  }
-  const btn = $<HTMLButtonElement>("bw-create");
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.classList.add("busy");
-  btn.textContent = "Mengirim…";
-  try {
-    const issue = await invoke<CreatedIssue>("create_jira_bug", {
-      projectKey,
-      summary,
-      body,
-      priority,
-      assigneeId,
-      imageBase64: bwImage ?? undefined,
-    });
-    toast(`Bug dibuat: ${issue.key}`);
-    void openUrl(issue.url).catch(() => {
-      /* toast already shows the key if opening the browser fails */
-    });
-    closeBugWriter();
-  } catch (e) {
-    toast(`Gagal buat bug: ${errStr(e)}`, "error");
-  } finally {
-    btn.disabled = false;
-    btn.classList.remove("busy");
-    btn.textContent = prev;
-  }
-}
-
-function wireBugWriter(): void {
-  $("bugwriter-btn").addEventListener("click", openBugWriter);
-  $("bw-close").addEventListener("click", closeBugWriter);
-  $("bugwriter-overlay").addEventListener("click", (e) => {
-    if (e.target === $("bugwriter-overlay")) closeBugWriter();
-  });
-
-  // Screenshot: click to pick, drag-drop, or paste.
-  const drop = $("bw-drop");
-  drop.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).id !== "bw-clear-img") ($("bw-file") as HTMLInputElement).click();
-  });
-  $("bw-file").addEventListener("change", (e) =>
-    void acceptBwImageFrom((e.target as HTMLInputElement).files)
-  );
-  $("bw-clear-img").addEventListener("click", (e) => {
-    e.stopPropagation();
-    clearBwImage();
-  });
-  drop.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    drop.classList.add("bw-drag");
-  });
-  drop.addEventListener("dragleave", () => drop.classList.remove("bw-drag"));
-  drop.addEventListener("drop", (e) => {
-    e.preventDefault();
-    drop.classList.remove("bw-drag");
-    void acceptBwImageFrom((e as DragEvent).dataTransfer?.files ?? null);
-  });
-  // Paste anywhere while the overlay is open.
-  $("bugwriter-overlay").addEventListener("paste", (e) => {
-    const items = (e as ClipboardEvent).clipboardData?.items;
-    if (!items) return;
-    for (const it of Array.from(items)) {
-      if (it.kind === "file" && it.type.startsWith("image/")) {
-        const file = it.getAsFile();
-        if (file) {
-          e.preventDefault();
-          void acceptBwImageFrom(({ 0: file, length: 1, item: () => file } as unknown) as FileList);
-        }
-        return;
-      }
-    }
-  });
-
-  $("bw-project").addEventListener("change", () =>
-    void loadBwAssignees(($("bw-project") as HTMLSelectElement).value)
-  );
-  $("bw-generate").addEventListener("click", () => void generateBug());
-  $("bw-create").addEventListener("click", () => void createBug());
-  $("bw-copy").addEventListener("click", () => {
-    const title = ($("bw-title") as HTMLInputElement).value;
-    const body = ($("bw-body") as HTMLTextAreaElement).value;
-    void navigator.clipboard
-      .writeText(`${title}\n\n${body}`)
-      .then(() => toast("Disalin ke clipboard."))
-      .catch(() => toast("Gagal menyalin.", "error"));
-  });
-}
-
 /** Save the current form, then run a connection-test command and show the
  *  result inline. Used by the Jira / GitHub / Gemini "Test koneksi" buttons. */
 async function runTest(btnId: string, statusId: string, command: string): Promise<void> {
@@ -2230,6 +1692,7 @@ function wireEvents(): void {
     }
     if (e.key === "Escape") {
       const overlays: Array<[string, () => void]> = [
+        ["annotate-overlay", cancelAnnotator],
         ["bugwriter-overlay", closeBugWriter],
         ["ticket-overlay", closeTicketBuilder],
         ["summary-overlay", closeSummary],
@@ -2349,6 +1812,7 @@ function wireEvents(): void {
   $("tc-add-form").addEventListener("submit", (e) => void addTestCase(e));
 
   wireBugWriter();
+  wireAnnotator();
   wireSummary();
   wireTicketBuilder();
 }

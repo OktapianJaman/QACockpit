@@ -63,6 +63,15 @@ pub struct AppConfig {
     /// "English". Empty/legacy configs default to "Indonesia" in `load_config`.
     #[serde(default)]
     pub ai_language: String,
+    /// Read-only presence flags for the masked secrets. Set by `get_config` so
+    /// the frontend can tell "a token is saved" without ever receiving its
+    /// value. Ignored on the way in (saving never persists these).
+    #[serde(default)]
+    pub has_jira_token: bool,
+    #[serde(default)]
+    pub has_github_token: bool,
+    #[serde(default)]
+    pub has_gemini_key: bool,
 }
 
 const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
@@ -86,6 +95,11 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         ai_language: get("ai_language")?
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Indonesia".to_string()),
+        // Presence flags are a get_config concern only; the loaded config holds
+        // the real secrets, so leave them false here.
+        has_jira_token: false,
+        has_github_token: false,
+        has_gemini_key: false,
     })
 }
 
@@ -118,16 +132,27 @@ where
 
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     let set = |k: &str, v: &str| db::set_config(conn, k, v).map_err(|e| e.to_string());
+    // A secret is only overwritten when the frontend sends a non-empty value;
+    // an empty field means "unchanged" (the frontend never receives the stored
+    // value, so it can't echo it back). This keeps the masked round-trip
+    // lossless — open Settings, save, and your tokens survive.
+    let set_secret = |k: &str, v: &str| {
+        if v.trim().is_empty() {
+            Ok(())
+        } else {
+            set(k, v)
+        }
+    };
     set("jira_base_url", &cfg.jira_base_url)?;
     set("jira_email", &cfg.jira_email)?;
-    set("jira_token", &cfg.jira_token)?;
+    set_secret("jira_token", &cfg.jira_token)?;
     set("jira_story_point_field", &cfg.jira_story_point_field)?;
     set("jira_project", &cfg.jira_project)?;
     set("jira_assignee", &cfg.jira_assignee)?;
     set("jira_status_category", &cfg.jira_status_category)?;
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
-    set("github_token", &cfg.github_token)?;
-    set("gemini_api_key", &cfg.gemini_api_key)?;
+    set_secret("github_token", &cfg.github_token)?;
+    set_secret("gemini_api_key", &cfg.gemini_api_key)?;
     set("ai_language", &cfg.ai_language)?;
     Ok(())
 }
@@ -485,7 +510,17 @@ pub fn screen_recording_ok() -> Result<bool, String> {
 #[tauri::command]
 pub fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
     let conn = state.conn()?;
-    load_config(&conn)
+    let mut cfg = load_config(&conn)?;
+    // Never ship the actual secrets to the frontend. Surface only whether each
+    // one is set, then blank the values. Saving with an empty secret preserves
+    // the stored one (see `save_config`), so a blanked round-trip is lossless.
+    cfg.has_jira_token = !cfg.jira_token.trim().is_empty();
+    cfg.has_github_token = !cfg.github_token.trim().is_empty();
+    cfg.has_gemini_key = !cfg.gemini_api_key.trim().is_empty();
+    cfg.jira_token = String::new();
+    cfg.github_token = String::new();
+    cfg.gemini_api_key = String::new();
+    Ok(cfg)
 }
 
 #[tauri::command]
@@ -1066,14 +1101,16 @@ pub struct BugReport {
 pub async fn generate_bug_report(
     state: tauri::State<'_, AppState>,
     text: String,
-    image_base64: Option<String>,
+    images: Vec<String>,
     language: String,
     sections: Vec<String>,
 ) -> Result<BugReport, String> {
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
-    if text.trim().is_empty() && image_base64.is_none() {
+    // Drop blanks so an empty array / stray "" doesn't count as an attachment.
+    let images: Vec<String> = images.into_iter().filter(|s| !s.trim().is_empty()).collect();
+    if text.trim().is_empty() && images.is_empty() {
         return Err("Isi deskripsi bug atau lampirkan screenshot dulu".into());
     }
     let lang = if language.trim().is_empty() { "Indonesia" } else { language.trim() };
@@ -1086,7 +1123,7 @@ pub async fn generate_bug_report(
     let (title, body, raw) = crate::ai::gemma::generate_bug_report(
         &ai_target(&cfg),
         &text,
-        image_base64.as_deref(),
+        &images,
         lang,
         &sections,
     );
@@ -1108,7 +1145,8 @@ pub async fn create_jira_bug(
     body: String,
     priority: Option<String>,
     assignee_id: Option<String>,
-    image_base64: Option<String>,
+    images: Vec<String>,
+    videos: Vec<String>,
 ) -> Result<integrations::jira::CreatedIssue, String> {
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
@@ -1149,22 +1187,86 @@ pub async fn create_jira_bug(
     )
     .map_err(|e| e.to_string())?;
 
-    if let Some(img) = image_base64.as_deref().filter(|s| !s.trim().is_empty()) {
-        // A failed attachment must not lose the created issue — report it softly.
+    // Attach every screenshot + recording. A failed upload must not lose the
+    // created issue, so collect failures and report them softly.
+    let clean = |v: Vec<String>| -> Vec<String> {
+        v.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+    let images = clean(images);
+    let videos = clean(videos);
+    let total = images.len() + videos.len();
+    let mut failed = 0u32;
+    let attach = |name: &str, data: &str| {
         integrations::jira::upload_attachment(
             &cfg.jira_base_url,
             &cfg.jira_email,
             &cfg.jira_token,
             &created.key,
-            "screenshot.png",
-            img,
+            name,
+            data,
         )
-        .map_err(|e| format!("Bug {} dibuat, tapi gagal lampirkan screenshot: {e}", created.key))?;
+    };
+    for (i, img) in images.iter().enumerate() {
+        if attach(&format!("screenshot-{}.png", i + 1), img).is_err() {
+            failed += 1;
+        }
+    }
+    for (i, vid) in videos.iter().enumerate() {
+        if attach(&format!("recording-{}.webm", i + 1), vid).is_err() {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        return Err(format!(
+            "Bug {} dibuat, tapi {failed} dari {total} lampiran gagal diunggah",
+            created.key
+        ));
     }
 
     Ok(created)
     })
     .await
+}
+
+/// Capture a user-selected screen region and return it as a PNG data URL, or
+/// `None` if the user cancelled the selection. macOS only (uses the built-in
+/// `screencapture -i`); other platforms return an error so the UI can hide the
+/// button gracefully.
+#[tauri::command]
+pub fn capture_screen_region() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use base64::Engine;
+        let mut path = std::env::temp_dir();
+        path.push("qacockpit-region-capture.png");
+        // Clear any stale file so a cancelled capture can't resurface an old one.
+        let _ = std::fs::remove_file(&path);
+
+        // `-i` = interactive region/window selection. Esc-cancel exits 0 but
+        // writes no file.
+        let status = std::process::Command::new("screencapture")
+            .args(["-i", "-t", "png"])
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("gagal menjalankan screencapture: {e}"))?;
+        if !status.success() {
+            return Err("Capture gagal".into());
+        }
+        if !path.exists() {
+            return Ok(None); // user pressed Esc
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("gagal baca hasil capture: {e}"))?;
+        let _ = std::fs::remove_file(&path);
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(Some(format!("data:image/png;base64,{b64}")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Region capture cuma didukung di macOS".into())
+    }
 }
 
 // ---------------------------------------------------------------------------

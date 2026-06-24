@@ -132,11 +132,12 @@ pub fn parse_fields(json: &str) -> Result<Vec<JiraField>> {
 pub fn fetch_fields(base_url: &str, email: &str, token: &str) -> Result<Vec<JiraField>> {
     let url = format!("{}/rest/api/3/field", base_url.trim_end_matches('/'));
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json"),
+    )?
         .error_for_status()?
         .text()?;
     parse_fields(&body)
@@ -182,12 +183,13 @@ pub fn fetch_projects(base_url: &str, email: &str, token: &str) -> Result<Vec<Ji
         base_url.trim_end_matches('/')
     );
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .query(&[("maxResults", "100")])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[("maxResults", "100")]),
+    )?
         .error_for_status()?
         .text()?;
     parse_projects(&body)
@@ -243,12 +245,13 @@ pub fn fetch_assignees(
         base_url.trim_end_matches('/')
     );
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .query(&[("project", project.trim()), ("maxResults", "100")])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[("project", project.trim()), ("maxResults", "100")]),
+    )?
         .error_for_status()?
         .text()?;
     parse_assignees(&body)
@@ -319,11 +322,12 @@ pub fn fetch_transitions(
         issue_key
     );
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json"),
+    )?
         .error_for_status()?
         .text()?;
     parse_transitions(&body)
@@ -435,16 +439,17 @@ pub fn fetch_my_issues(
     let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
     let jql = build_jql(project, assignee, status_category, sprint_scope);
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .query(&[
-            ("jql", jql.as_str()),
-            ("fields", fields.as_str()),
-            ("maxResults", "100"),
-        ])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[
+                ("jql", jql.as_str()),
+                ("fields", fields.as_str()),
+                ("maxResults", "100"),
+            ]),
+    )?
         .error_for_status()?
         .text()?;
     parse_issues(&body, story_point_field)
@@ -672,11 +677,12 @@ pub fn find_issue_type(
         project_key
     );
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json"),
+    )?
         .error_for_status()?
         .text()?;
     parse_issue_type_id(&body, issue_type_name).ok_or_else(|| {
@@ -986,16 +992,17 @@ pub fn fetch_active_sprint_id(base_url: &str, email: &str, token: &str, project:
     let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
     let jql = format!("project = \"{}\" AND sprint in openSprints()", project.trim());
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .query(&[
-            ("jql", jql.as_str()),
-            ("fields", "customfield_10021"),
-            ("maxResults", "1"),
-        ])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[
+                ("jql", jql.as_str()),
+                ("fields", "customfield_10021"),
+                ("maxResults", "1"),
+            ]),
+    )?
         .error_for_status()?
         .text()?;
     parse_active_sprint_id(&body)
@@ -1052,11 +1059,12 @@ pub fn fetch_source_ticket(base_url: &str, email: &str, token: &str, key: &str) 
         key
     );
     let client = crate::net::client();
-    let resp = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .send()?;
+    let resp = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json"),
+    )?;
     let body = jira_body(resp)?;
     parse_source_ticket(&body)
 }
@@ -1085,11 +1093,12 @@ pub fn resolve_user(
 pub fn fetch_myself(base_url: &str, email: &str, token: &str) -> Result<String> {
     let url = format!("{}/rest/api/3/myself", base_url.trim_end_matches('/'));
     let client = crate::net::client();
-    let body = client
-        .get(url)
-        .basic_auth(email, Some(token))
-        .header("Accept", "application/json")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(url)
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json"),
+    )?
         .error_for_status()?
         .text()?;
     let v: Value = serde_json::from_str(&body)?;
