@@ -1212,7 +1212,7 @@ pub async fn create_jira_bug(
         }
     }
     for (i, vid) in videos.iter().enumerate() {
-        if attach(&format!("recording-{}.webm", i + 1), vid).is_err() {
+        if attach(&format!("recording-{}.mov", i + 1), vid).is_err() {
             failed += 1;
         }
     }
@@ -1266,6 +1266,51 @@ pub fn capture_screen_region() -> Result<Option<String>, String> {
     #[cfg(not(target_os = "macos"))]
     {
         Err("Region capture cuma didukung di macOS".into())
+    }
+}
+
+/// Record a screen clip and return it as a QuickTime (.mov) data URL, or `None`
+/// if the user cancelled. macOS only: uses `screencapture -v` (interactive
+/// selection — the user picks the area/screen and stops via the menu-bar
+/// control, exactly like ⌘⇧5). Requires Screen Recording permission.
+#[tauri::command]
+pub fn capture_screen_video() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use base64::Engine;
+        if !crate::recorder::window::screen_recording_permission_ok() {
+            return Err(
+                "Izin Screen Recording belum aktif. Buka System Settings → Privacy & Security → \
+                 Screen Recording, aktifkan QA Cockpit, lalu coba lagi."
+                    .into(),
+            );
+        }
+        let mut path = std::env::temp_dir();
+        path.push("qacockpit-recording.mov");
+        let _ = std::fs::remove_file(&path);
+
+        let status = std::process::Command::new("screencapture")
+            .arg("-v") // interactive video capture; blocks until the user stops
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("gagal menjalankan screencapture: {e}"))?;
+        if !status.success() {
+            return Err("Rekam gagal".into());
+        }
+        if !path.exists() {
+            return Ok(None); // user cancelled before recording
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("gagal baca hasil rekaman: {e}"))?;
+        let _ = std::fs::remove_file(&path);
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(Some(format!("data:video/quicktime;base64,{b64}")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Rekam layar cuma didukung di macOS".into())
     }
 }
 

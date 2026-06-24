@@ -8,7 +8,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, show, toast, errStr } from "./dom";
 import { esc } from "./markdown";
 import { openAnnotator } from "./annotate";
-import { recordingSupported, isRecording, startRecording, stopRecording } from "./record";
 import type { AppConfig, JiraProject, JiraUser } from "./types";
 
 // Attached screenshots as data URLs (empty = none). Multiple are supported:
@@ -112,32 +111,27 @@ async function annotateBwImage(index: number): Promise<void> {
   }
 }
 
-/** Toggle screen recording. While recording, the button stops it; the finished
- *  clip is appended to the strip as a webm. */
-function toggleRecording(): void {
+/** Record a screen clip via the native macOS recorder (screencapture -v). The
+ *  OS handles region selection + the menu-bar stop control; the finished .mov is
+ *  appended to the strip. */
+async function recordScreenNative(): Promise<void> {
   const btn = $<HTMLButtonElement>("bw-record");
-  if (isRecording()) {
-    stopRecording();
-    return;
-  }
-  void startRecording(
-    (dataUrl) => {
+  btn.disabled = true;
+  btn.classList.add("recording");
+  btn.textContent = "⏺ Merekam… (stop di menu bar)";
+  try {
+    const dataUrl = await invoke<string | null>("capture_screen_video");
+    if (dataUrl) {
       bwVideos.push(dataUrl);
       renderBwThumbs();
-      btn.textContent = "⏺ Rekam layar";
-      btn.classList.remove("recording");
-    },
-    (msg) => {
-      toast(`Gagal rekam layar: ${msg}`, "error");
-      btn.textContent = "⏺ Rekam layar";
-      btn.classList.remove("recording");
     }
-  ).then(() => {
-    if (isRecording()) {
-      btn.textContent = "⏹ Stop rekam";
-      btn.classList.add("recording");
-    }
-  });
+  } catch (e) {
+    toast(`Gagal rekam layar: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("recording");
+    btn.textContent = "⏺ Rekam layar";
+  }
 }
 
 /** Snip a screen region via the OS (macOS) and append it to the strip. */
@@ -327,12 +321,11 @@ export function wireBugWriter(): void {
   const drop = $("bw-drop");
   drop.addEventListener("click", () => ($("bw-file") as HTMLInputElement).click());
   $("bw-snip").addEventListener("click", () => void snipRegion());
-  // Screen recording is only offered where the WebView supports it.
-  if (recordingSupported()) {
-    const rec = $("bw-record");
-    show(rec, true);
-    rec.addEventListener("click", () => toggleRecording());
-  }
+  // Screen recording goes through the native macOS recorder (the WebView's
+  // getDisplayMedia isn't available), so the button is always shown.
+  const rec = $("bw-record");
+  show(rec, true);
+  rec.addEventListener("click", () => void recordScreenNative());
   $("bw-file").addEventListener("change", (e) =>
     void acceptBwImagesFrom((e.target as HTMLInputElement).files)
   );
