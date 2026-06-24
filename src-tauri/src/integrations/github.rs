@@ -134,16 +134,17 @@ pub fn parse_pr_search(json: &str) -> Result<Vec<PrRef>> {
 /// Thin HTTP wrapper around `parse_pr_search`; not unit-tested.
 pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
     let client = crate::net::client();
-    let body = client
-        .get("https://api.github.com/search/issues")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "qa-cockpit")
-        // Quote the key for an EXACT phrase match — otherwise GitHub matches the
-        // bare token (e.g. "QAT" also hits ML "quantization-aware training" PRs
-        // across all of GitHub). `in:title,body` keeps it to where keys appear.
-        .query(&[("q", format!("\"{key}\" in:title,body type:pr"))])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get("https://api.github.com/search/issues")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "qa-cockpit")
+            // Quote the key for an EXACT phrase match — otherwise GitHub matches the
+            // bare token (e.g. "QAT" also hits ML "quantization-aware training" PRs
+            // across all of GitHub). `in:title,body` keeps it to where keys appear.
+            .query(&[("q", format!("\"{key}\" in:title,body type:pr"))]),
+    )?
         .error_for_status()?
         .text()?;
     parse_pr_search(&body)
@@ -153,12 +154,13 @@ pub fn search_prs_for_key(token: &str, key: &str) -> Result<Vec<PrRef>> {
 /// Thin HTTP wrapper; not unit-tested.
 pub fn fetch_pr_diff(token: &str, repo: &str, number: i64) -> Result<String> {
     let client = crate::net::client();
-    let diff = client
-        .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github.diff")
-        .header("User-Agent", "qa-cockpit")
-        .send()?
+    let diff = crate::net::send_retrying(
+        client
+            .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.diff")
+            .header("User-Agent", "qa-cockpit"),
+    )?
         .error_for_status()?
         .text()?;
     Ok(diff)
@@ -168,13 +170,14 @@ pub fn fetch_pr_diff(token: &str, repo: &str, number: i64) -> Result<String> {
 /// Thin HTTP wrapper around `parse_prs`; not unit-tested.
 pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
     let client = crate::net::client();
-    let body = client
-        .get("https://api.github.com/search/issues")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "qa-cockpit")
-        .query(&[("q", "author:@me type:pr")])
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get("https://api.github.com/search/issues")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "qa-cockpit")
+            .query(&[("q", "author:@me type:pr")]),
+    )?
         .error_for_status()?
         .text()?;
     parse_prs(&body)
@@ -184,12 +187,13 @@ pub fn fetch_my_prs(token: &str) -> Result<Vec<Pr>> {
 /// Thin HTTP wrapper; not unit-tested.
 pub fn fetch_user(token: &str) -> Result<String> {
     let client = crate::net::client();
-    let body = client
-        .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "qa-cockpit")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get("https://api.github.com/user")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "qa-cockpit"),
+    )?
         .error_for_status()?
         .text()?;
     let v: Value = serde_json::from_str(&body)?;
@@ -227,12 +231,13 @@ pub fn parse_pr_detail(json: &str) -> Result<(String, String)> {
 /// Fetch a PR's title + body. Thin HTTP wrapper; not unit-tested.
 pub fn fetch_pr_detail(token: &str, repo: &str, number: i64) -> Result<(String, String)> {
     let client = crate::net::client();
-    let body = client
-        .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "qa-cockpit")
-        .send()?
+    let body = crate::net::send_retrying(
+        client
+            .get(format!("https://api.github.com/repos/{repo}/pulls/{number}"))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "qa-cockpit"),
+    )?
         .error_for_status()?
         .text()?;
     parse_pr_detail(&body)
