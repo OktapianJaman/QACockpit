@@ -1817,7 +1817,19 @@ h2 {
   background: rgba(200, 30, 30, 0.9);
 }
 .bw-capture-row {
+  display: flex;
+  gap: 8px;
   margin: -4px 0 12px;
+}
+.bw-thumb-video video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+#bw-record.recording {
+  border-color: #e5484d;
+  color: #e5484d;
 }
 .bw-thumb-edit {
   position: absolute;

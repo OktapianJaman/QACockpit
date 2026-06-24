@@ -1146,6 +1146,7 @@ pub async fn create_jira_bug(
     priority: Option<String>,
     assignee_id: Option<String>,
     images: Vec<String>,
+    videos: Vec<String>,
 ) -> Result<integrations::jira::CreatedIssue, String> {
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
@@ -1186,34 +1187,39 @@ pub async fn create_jira_bug(
     )
     .map_err(|e| e.to_string())?;
 
-    // Attach every screenshot. A failed upload must not lose the created issue,
-    // so collect failures and report them softly (the issue itself succeeded).
-    let images: Vec<&str> = images
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Attach every screenshot + recording. A failed upload must not lose the
+    // created issue, so collect failures and report them softly.
+    let clean = |v: Vec<String>| -> Vec<String> {
+        v.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+    let images = clean(images);
+    let videos = clean(videos);
+    let total = images.len() + videos.len();
     let mut failed = 0u32;
-    for (i, img) in images.iter().enumerate() {
-        let name = format!("screenshot-{}.png", i + 1);
-        if integrations::jira::upload_attachment(
+    let attach = |name: &str, data: &str| {
+        integrations::jira::upload_attachment(
             &cfg.jira_base_url,
             &cfg.jira_email,
             &cfg.jira_token,
             &created.key,
-            &name,
-            img,
+            name,
+            data,
         )
-        .is_err()
-        {
+    };
+    for (i, img) in images.iter().enumerate() {
+        if attach(&format!("screenshot-{}.png", i + 1), img).is_err() {
+            failed += 1;
+        }
+    }
+    for (i, vid) in videos.iter().enumerate() {
+        if attach(&format!("recording-{}.webm", i + 1), vid).is_err() {
             failed += 1;
         }
     }
     if failed > 0 {
         return Err(format!(
-            "Bug {} dibuat, tapi {failed} dari {} screenshot gagal dilampirkan",
-            created.key,
-            images.len()
+            "Bug {} dibuat, tapi {failed} dari {total} lampiran gagal diunggah",
+            created.key
         ));
     }
 

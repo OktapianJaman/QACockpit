@@ -8,11 +8,14 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, show, toast, errStr } from "./dom";
 import { esc } from "./markdown";
 import { openAnnotator } from "./annotate";
+import { recordingSupported, isRecording, startRecording, stopRecording } from "./record";
 import type { AppConfig, JiraProject, JiraUser } from "./types";
 
 // Attached screenshots as data URLs (empty = none). Multiple are supported:
 // all are attached to the Jira issue and sent to the AI for context.
 let bwImages: string[] = [];
+// Attached screen recordings as webm data URLs (attachment-only; not sent to AI).
+let bwVideos: string[] = [];
 
 interface BugReport {
   title: string;
@@ -61,17 +64,40 @@ function renderBwThumbs(): void {
     thumb.appendChild(edit);
     wrap.appendChild(thumb);
   }
-  show(wrap, bwImages.length > 0);
+  for (let i = 0; i < bwVideos.length; i++) {
+    const thumb = document.createElement("div");
+    thumb.className = "bw-thumb bw-thumb-video";
+    const vid = document.createElement("video");
+    vid.src = bwVideos[i];
+    vid.controls = true;
+    vid.muted = true;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "bw-thumb-rm";
+    rm.title = "Hapus rekaman ini";
+    rm.textContent = "✕";
+    rm.dataset.vidIdx = String(i);
+    thumb.appendChild(vid);
+    thumb.appendChild(rm);
+    wrap.appendChild(thumb);
+  }
+  show(wrap, bwImages.length > 0 || bwVideos.length > 0);
 }
 
 function clearBwImages(): void {
   bwImages = [];
+  bwVideos = [];
   ($("bw-file") as HTMLInputElement).value = "";
   renderBwThumbs();
 }
 
 function removeBwImage(index: number): void {
   bwImages.splice(index, 1);
+  renderBwThumbs();
+}
+
+function removeBwVideo(index: number): void {
+  bwVideos.splice(index, 1);
   renderBwThumbs();
 }
 
@@ -84,6 +110,34 @@ async function annotateBwImage(index: number): Promise<void> {
     bwImages[index] = edited;
     renderBwThumbs();
   }
+}
+
+/** Toggle screen recording. While recording, the button stops it; the finished
+ *  clip is appended to the strip as a webm. */
+function toggleRecording(): void {
+  const btn = $<HTMLButtonElement>("bw-record");
+  if (isRecording()) {
+    stopRecording();
+    return;
+  }
+  void startRecording(
+    (dataUrl) => {
+      bwVideos.push(dataUrl);
+      renderBwThumbs();
+      btn.textContent = "⏺ Rekam layar";
+      btn.classList.remove("recording");
+    },
+    (msg) => {
+      toast(`Gagal rekam layar: ${msg}`, "error");
+      btn.textContent = "⏺ Rekam layar";
+      btn.classList.remove("recording");
+    }
+  ).then(() => {
+    if (isRecording()) {
+      btn.textContent = "⏹ Stop rekam";
+      btn.classList.add("recording");
+    }
+  });
 }
 
 /** Snip a screen region via the OS (macOS) and append it to the strip. */
@@ -246,6 +300,7 @@ async function createBug(): Promise<void> {
       priority,
       assigneeId,
       images: bwImages,
+      videos: bwVideos,
     });
     toast(`Bug dibuat: ${issue.key}`);
     void openUrl(issue.url).catch(() => {
@@ -272,6 +327,12 @@ export function wireBugWriter(): void {
   const drop = $("bw-drop");
   drop.addEventListener("click", () => ($("bw-file") as HTMLInputElement).click());
   $("bw-snip").addEventListener("click", () => void snipRegion());
+  // Screen recording is only offered where the WebView supports it.
+  if (recordingSupported()) {
+    const rec = $("bw-record");
+    show(rec, true);
+    rec.addEventListener("click", () => toggleRecording());
+  }
   $("bw-file").addEventListener("change", (e) =>
     void acceptBwImagesFrom((e.target as HTMLInputElement).files)
   );
@@ -279,8 +340,12 @@ export function wireBugWriter(): void {
   $("bw-thumbs").addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
     const rm = target.closest(".bw-thumb-rm") as HTMLElement | null;
-    if (rm?.dataset.idx) {
+    if (rm?.dataset.idx !== undefined) {
       removeBwImage(Number(rm.dataset.idx));
+      return;
+    }
+    if (rm?.dataset.vidIdx !== undefined) {
+      removeBwVideo(Number(rm.dataset.vidIdx));
       return;
     }
     const edit = target.closest(".bw-thumb-edit") as HTMLElement | null;
