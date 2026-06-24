@@ -396,5 +396,25 @@
         </form>
       </div>
     </div>
+
+    <!-- Screenshot annotator (draw boxes / arrows / redact, then save) -->
+    <div id="annotate-overlay" class="overlay hidden">
+      <div class="annotate-panel card">
+        <div class="annotate-toolbar">
+          <button id="ann-tool-rect" class="btn small active" type="button">▭ Kotak</button>
+          <button id="ann-tool-arrow" class="btn small" type="button">↗ Panah</button>
+          <button id="ann-tool-redact" class="btn small" type="button">▮ Sensor</button>
+          <span class="annotate-sep"></span>
+          <button id="ann-undo" class="btn small" type="button">↶ Undo</button>
+          <button id="ann-clear" class="btn small" type="button">Bersihkan</button>
+          <span class="annotate-spacer"></span>
+          <button id="ann-cancel" class="btn small" type="button">Batal</button>
+          <button id="ann-save" class="btn small primary" type="button">Simpan anotasi</button>
+        </div>
+        <div class="annotate-canvas-wrap">
+          <canvas id="ann-canvas"></canvas>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

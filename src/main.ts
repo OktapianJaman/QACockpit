@@ -21,6 +21,7 @@ import { fmtPoints, pointsLabel } from "./format";
 import { displayColumn, orderedColumns } from "./board-logic";
 import { $, show, toast, errStr, addCopyButton, initTheme, toggleTheme } from "./dom";
 import { wireBugWriter, closeBugWriter } from "./bugwriter";
+import { wireAnnotator, cancelAnnotator } from "./annotate";
 
 // ---------------------------------------------------------------------------
 // Kanban board
@@ -1691,6 +1692,7 @@ function wireEvents(): void {
     }
     if (e.key === "Escape") {
       const overlays: Array<[string, () => void]> = [
+        ["annotate-overlay", cancelAnnotator],
         ["bugwriter-overlay", closeBugWriter],
         ["ticket-overlay", closeTicketBuilder],
         ["summary-overlay", closeSummary],
@@ -1810,6 +1812,7 @@ function wireEvents(): void {
   $("tc-add-form").addEventListener("submit", (e) => void addTestCase(e));
 
   wireBugWriter();
+  wireAnnotator();
   wireSummary();
   wireTicketBuilder();
 }

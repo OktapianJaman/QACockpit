@@ -1819,6 +1819,69 @@ h2 {
 .bw-capture-row {
   margin: -4px 0 12px;
 }
+.bw-thumb-edit {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  text-align: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bw-thumb-edit:hover {
+  background: var(--accent, rgba(40, 120, 200, 0.9));
+}
+
+/* Screenshot annotator overlay */
+.annotate-panel {
+  width: min(92vw, 1100px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.annotate-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.annotate-toolbar .btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.annotate-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.annotate-spacer {
+  flex: 1;
+}
+.annotate-canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: var(--bg-soft, rgba(127, 127, 127, 0.08));
+  border-radius: 8px;
+  padding: 10px;
+}
+#ann-canvas {
+  max-width: 100%;
+  height: auto;
+  cursor: crosshair;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
 .bw-opts {
   display: flex;
   gap: 18px;

@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, show, toast, errStr } from "./dom";
 import { esc } from "./markdown";
+import { openAnnotator } from "./annotate";
 import type { AppConfig, JiraProject, JiraUser } from "./types";
 
 // Attached screenshots as data URLs (empty = none). Multiple are supported:
@@ -49,8 +50,15 @@ function renderBwThumbs(): void {
     rm.title = "Hapus gambar ini";
     rm.textContent = "✕";
     rm.dataset.idx = String(i);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "bw-thumb-edit";
+    edit.title = "Anotasi (kotak / panah / sensor)";
+    edit.textContent = "✎";
+    edit.dataset.editIdx = String(i);
     thumb.appendChild(img);
     thumb.appendChild(rm);
+    thumb.appendChild(edit);
     wrap.appendChild(thumb);
   }
   show(wrap, bwImages.length > 0);
@@ -65,6 +73,17 @@ function clearBwImages(): void {
 function removeBwImage(index: number): void {
   bwImages.splice(index, 1);
   renderBwThumbs();
+}
+
+/** Open the annotator on a thumbnail; replace it with the edited image. */
+async function annotateBwImage(index: number): Promise<void> {
+  const current = bwImages[index];
+  if (!current) return;
+  const edited = await openAnnotator(current);
+  if (edited) {
+    bwImages[index] = edited;
+    renderBwThumbs();
+  }
 }
 
 /** Snip a screen region via the OS (macOS) and append it to the strip. */
@@ -256,10 +275,16 @@ export function wireBugWriter(): void {
   $("bw-file").addEventListener("change", (e) =>
     void acceptBwImagesFrom((e.target as HTMLInputElement).files)
   );
-  // Remove a single thumbnail (event-delegated on its ✕ button).
+  // Thumbnail actions (event-delegated): ✕ removes, ✎ opens the annotator.
   $("bw-thumbs").addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest(".bw-thumb-rm") as HTMLElement | null;
-    if (btn?.dataset.idx) removeBwImage(Number(btn.dataset.idx));
+    const target = e.target as HTMLElement;
+    const rm = target.closest(".bw-thumb-rm") as HTMLElement | null;
+    if (rm?.dataset.idx) {
+      removeBwImage(Number(rm.dataset.idx));
+      return;
+    }
+    const edit = target.closest(".bw-thumb-edit") as HTMLElement | null;
+    if (edit?.dataset.editIdx) void annotateBwImage(Number(edit.dataset.editIdx));
   });
   drop.addEventListener("dragover", (e) => {
     e.preventDefault();
