@@ -4,96 +4,21 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 
-// ---------------------------------------------------------------------------
-// Backend types (mirror src-tauri/src/commands.rs — serde defaults to
-// snake_case Rust field names, so match them exactly).
-// ---------------------------------------------------------------------------
-
-interface BoardTicket {
-  key: string;
-  summary: string;
-  status: string;
-  story_points: number | null;
-}
-
-interface TestCase {
-  id: number;
-  ticket_key: string;
-  title: string;
-  steps: string;
-  expected: string;
-  status: string;
-  notes: string;
-}
-
-interface ChatMsg {
-  role: "user" | "assistant";
-  content: string;
-  /** Attached screenshots (data: URLs), shown in the user's bubble. */
-  images?: string[];
-}
-
-interface PrRef {
-  number: number;
-  repo: string;
-  title: string;
-  state: string;
-  url: string;
-  /** Follow-up Q&A about this PR (loaded from + persisted to the DB). */
-  chat?: ChatMsg[];
-  /** Cached AI summary ("Ringkas + apa yang dites"), loaded from the DB. */
-  summary?: string;
-}
-
-interface JiraField {
-  id: string;
-  name: string;
-}
-
-interface JiraProject {
-  key: string;
-  name: string;
-}
-
-interface JiraUser {
-  account_id: string;
-  display_name: string;
-}
-
-interface JiraTransition {
-  id: string;
-  name: string;
-  to_status: string;
-}
-
-interface AppConfig {
-  jira_base_url: string;
-  jira_email: string;
-  jira_token: string;
-  jira_story_point_field: string;
-  jira_project: string;
-  jira_assignee: string;
-  jira_sprint_scope: string;
-  github_token: string;
-  gemini_api_key: string;
-  ai_language: string;
-}
-
-const CONFIG_KEYS: (keyof AppConfig)[] = [
-  "jira_base_url",
-  "jira_email",
-  "jira_token",
-  "jira_story_point_field",
-  "jira_project",
-  "jira_assignee",
-  "jira_sprint_scope",
-  "github_token",
-  "gemini_api_key",
-  "ai_language",
-];
-
-/** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */
-const KNOWN_REPOS = ["tr8team/gotradeindoapp", "tr8team/tradecharlieflutter"];
+import type {
+  BoardTicket,
+  TestCase,
+  ChatMsg,
+  PrRef,
+  JiraField,
+  JiraProject,
+  JiraUser,
+  JiraTransition,
+  AppConfig,
+} from "./types";
+import { CONFIG_KEYS, KNOWN_REPOS, THEME_KEY } from "./constants";
+import { esc, mdInline, mdToHtml } from "./markdown";
+import { fmtPoints, pointsLabel } from "./format";
+import { displayColumn, orderedColumns } from "./board-logic";
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -111,7 +36,6 @@ function show(el: HTMLElement, visible: boolean): void {
 
 // --- Theme (light / dark), persisted in localStorage ---
 type Theme = "dark" | "light";
-const THEME_KEY = "qacockpit-theme";
 
 function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme === "light" ? "light" : "";
@@ -136,84 +60,6 @@ function toggleTheme(): void {
   const next: Theme = currentTheme() === "light" ? "dark" : "light";
   localStorage.setItem(THEME_KEY, next);
   applyTheme(next);
-}
-
-/** Escape text destined for innerHTML interpolation. */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/** Inline markdown (on already-escaped text): `code`, **bold**, *italic*. */
-function mdInline(s: string): string {
-  return s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-}
-
-/**
- * Render AI markdown as safe HTML (escape FIRST, then format). Handles
- * headings (#..######), horizontal rules (---), ordered/unordered lists,
- * blank-line paragraphs, and inline code/bold/italic. Nested indentation is
- * flattened (good enough for AI summaries).
- */
-function mdToHtml(src: string): string {
-  const lines = esc(src).split("\n");
-  const out: string[] = [];
-  let list: "ul" | "ol" | null = null;
-  const closeList = (): void => {
-    if (list) {
-      out.push(`</${list}>`);
-      list = null;
-    }
-  };
-  for (const raw of lines) {
-    const line = raw.trim();
-    let m: RegExpMatchArray | null;
-    if (/^---+$/.test(line) || /^\*\*\*+$/.test(line)) {
-      closeList();
-      out.push("<hr>");
-    } else if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-      closeList();
-      const lvl = Math.min(m[1].length + 2, 6); // # -> h3, ## -> h4, …
-      out.push(`<h${lvl} class="md-h">${mdInline(m[2])}</h${lvl}>`);
-    } else if ((m = line.match(/^\d+[.)]\s+(.*)$/))) {
-      if (list !== "ol") {
-        closeList();
-        out.push("<ol>");
-        list = "ol";
-      }
-      out.push(`<li>${mdInline(m[1])}</li>`);
-    } else if ((m = line.match(/^[-*]\s+(.*)$/))) {
-      if (list !== "ul") {
-        closeList();
-        out.push("<ul>");
-        list = "ul";
-      }
-      out.push(`<li>${mdInline(m[1])}</li>`);
-    } else if (line === "") {
-      closeList();
-    } else {
-      closeList();
-      out.push(`<p>${mdInline(line)}</p>`);
-    }
-  }
-  closeList();
-  return out.join("");
-}
-
-// ---------------------------------------------------------------------------
-// Formatting
-// ---------------------------------------------------------------------------
-
-/** Round a points value to 1 decimal place, dropping a trailing .0. */
-function fmtPoints(n: number): string {
-  const r = Math.round(n * 10) / 10;
-  return Number.isInteger(r) ? String(r) : r.toFixed(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,20 +108,6 @@ function addCopyButton(container: HTMLElement, text: string): void {
 // Kanban board
 // ---------------------------------------------------------------------------
 
-// Preferred left-to-right column order. A status fills a slot if, case-
-// insensitive, it equals or contains the keyword. Order matters: more specific
-// keywords (e.g. "qa in progress") must come before broader ones ("in progress").
-const STATUS_ORDER = [
-  "to do",
-  "ready for qa",
-  "today",
-  "qa in progress",
-  "in progress",
-  "qa passed",
-  "qa failed",
-  "done",
-];
-
 let boardTickets: BoardTicket[] = [];
 let boardSearch = "";
 // AI output language ("Indonesia" | "English"); drives UI labels that should
@@ -287,48 +119,6 @@ let aiLanguage = "Indonesia";
 let sprintScope = "";
 // Key of the card currently being dragged between columns (null = none).
 let draggingKey: string | null = null;
-
-/** Rank a status by the preferred order; unmatched statuses rank last. */
-function statusRank(status: string): number {
-  const s = status.toLowerCase();
-  for (let i = 0; i < STATUS_ORDER.length; i++) {
-    const kw = STATUS_ORDER[i];
-    if (s === kw || s.includes(kw)) return i;
-  }
-  return STATUS_ORDER.length;
-}
-
-function pointsLabel(pts: number | null): string {
-  return pts == null ? "— pts" : `${fmtPoints(pts)} pts`;
-}
-
-// Terminal/closed statuses collapse into a single "Done" column.
-const DONE_KEYWORDS = ["done", "passed", "closed", "complete", "resolved", "selesai"];
-
-/** Map a raw Jira status to its display column — terminal ones → "Done". */
-function displayColumn(status: string): string {
-  const s = status.toLowerCase();
-  return DONE_KEYWORDS.some((k) => s.includes(k)) ? "Done" : status;
-}
-
-// Canonical QA columns that always render — even with zero tickets — so they're
-// always available as drag-and-drop targets. A status already present (any case)
-// keeps its real Jira name; missing ones are added from here.
-const ALWAYS_COLUMNS = ["Ready for QA", "Today", "QA In Progress", "Done"];
-
-/** DISPLAY columns to render: those present + the always-on QA columns, deduped
- *  case-insensitively, ordered by preferred sequence then alpha. */
-function orderedColumns(tickets: BoardTicket[]): string[] {
-  const cols = new Set(tickets.map((t) => displayColumn(t.status)).filter(Boolean));
-  const lower = new Set([...cols].map((c) => c.toLowerCase()));
-  for (const c of ALWAYS_COLUMNS) {
-    if (!lower.has(c.toLowerCase())) cols.add(c);
-  }
-  return [...cols].sort((a, b) => {
-    const r = statusRank(a) - statusRank(b);
-    return r !== 0 ? r : a.localeCompare(b);
-  });
-}
 
 /** Build one card (click → detail; inline points; "pindah" → transition picker).
  *  Shows its real Jira status (since a column may merge several statuses). */
