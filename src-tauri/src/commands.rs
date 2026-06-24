@@ -1101,14 +1101,16 @@ pub struct BugReport {
 pub async fn generate_bug_report(
     state: tauri::State<'_, AppState>,
     text: String,
-    image_base64: Option<String>,
+    images: Vec<String>,
     language: String,
     sections: Vec<String>,
 ) -> Result<BugReport, String> {
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
 
-    if text.trim().is_empty() && image_base64.is_none() {
+    // Drop blanks so an empty array / stray "" doesn't count as an attachment.
+    let images: Vec<String> = images.into_iter().filter(|s| !s.trim().is_empty()).collect();
+    if text.trim().is_empty() && images.is_empty() {
         return Err("Isi deskripsi bug atau lampirkan screenshot dulu".into());
     }
     let lang = if language.trim().is_empty() { "Indonesia" } else { language.trim() };
@@ -1121,7 +1123,7 @@ pub async fn generate_bug_report(
     let (title, body, raw) = crate::ai::gemma::generate_bug_report(
         &ai_target(&cfg),
         &text,
-        image_base64.as_deref(),
+        &images,
         lang,
         &sections,
     );
@@ -1143,7 +1145,7 @@ pub async fn create_jira_bug(
     body: String,
     priority: Option<String>,
     assignee_id: Option<String>,
-    image_base64: Option<String>,
+    images: Vec<String>,
 ) -> Result<integrations::jira::CreatedIssue, String> {
     with_conn(&state, move |conn| {
     let cfg = load_config(&conn)?;
@@ -1184,17 +1186,35 @@ pub async fn create_jira_bug(
     )
     .map_err(|e| e.to_string())?;
 
-    if let Some(img) = image_base64.as_deref().filter(|s| !s.trim().is_empty()) {
-        // A failed attachment must not lose the created issue — report it softly.
-        integrations::jira::upload_attachment(
+    // Attach every screenshot. A failed upload must not lose the created issue,
+    // so collect failures and report them softly (the issue itself succeeded).
+    let images: Vec<&str> = images
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut failed = 0u32;
+    for (i, img) in images.iter().enumerate() {
+        let name = format!("screenshot-{}.png", i + 1);
+        if integrations::jira::upload_attachment(
             &cfg.jira_base_url,
             &cfg.jira_email,
             &cfg.jira_token,
             &created.key,
-            "screenshot.png",
+            &name,
             img,
         )
-        .map_err(|e| format!("Bug {} dibuat, tapi gagal lampirkan screenshot: {e}", created.key))?;
+        .is_err()
+        {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        return Err(format!(
+            "Bug {} dibuat, tapi {failed} dari {} screenshot gagal dilampirkan",
+            created.key,
+            images.len()
+        ));
     }
 
     Ok(created)

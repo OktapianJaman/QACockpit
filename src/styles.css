@@ -288,8 +288,10 @@ h2 {
 }
 
 .column {
-  flex: 0 0 280px;
-  width: 280px;
+  /* Grow to share the full board width on wide screens; keep a sensible floor
+     so columns stay readable and the board scrolls horizontally when narrow. */
+  flex: 1 1 280px;
+  min-width: 280px;
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 18px * 2 - 56px - 50px);
@@ -1773,16 +1775,46 @@ h2 {
 .bw-drop-hint strong {
   color: var(--accent);
 }
-.bw-preview {
-  max-height: 180px;
-  max-width: 100%;
+/* Thumbnail strip for one-or-more attached screenshots. */
+.bw-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.bw-thumb {
+  position: relative;
+  width: 96px;
+  height: 96px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  display: block;
-  margin: 0 auto 8px;
+  overflow: hidden;
+  background: var(--bg-soft, rgba(127, 127, 127, 0.08));
 }
-.bw-clear {
-  margin-top: 4px;
+.bw-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.bw-thumb-rm {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  text-align: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bw-thumb-rm:hover {
+  background: rgba(200, 30, 30, 0.9);
 }
 .bw-opts {
   display: flex;

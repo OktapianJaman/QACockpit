@@ -232,14 +232,13 @@
             placeholder="mis. pas klik Place Order di alamat tersimpan, muncul error 500…"></textarea>
         </label>
 
-        <label class="bw-label">Screenshot <span class="opt">(opsional)</span></label>
+        <label class="bw-label">Screenshot <span class="opt">(opsional — bisa lebih dari satu)</span></label>
+        <div id="bw-thumbs" class="bw-thumbs hidden"></div>
         <div id="bw-drop" class="bw-drop" tabindex="0">
-          <input id="bw-file" type="file" accept="image/*" hidden />
-          <img id="bw-preview" class="bw-preview hidden" alt="preview" />
+          <input id="bw-file" type="file" accept="image/*" multiple hidden />
           <div id="bw-drop-hint" class="bw-drop-hint">
             <strong>Klik</strong>, drag, atau <strong>paste (Ctrl+V)</strong> screenshot
           </div>
-          <button id="bw-clear-img" class="btn small bw-clear hidden" type="button">Hapus gambar</button>
         </div>
 
         <div class="bw-opts">

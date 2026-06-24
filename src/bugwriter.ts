@@ -9,8 +9,9 @@ import { $, show, toast, errStr } from "./dom";
 import { esc } from "./markdown";
 import type { AppConfig, JiraProject, JiraUser } from "./types";
 
-// The attached screenshot as a data URL (null = none).
-let bwImage: string | null = null;
+// Attached screenshots as data URLs (empty = none). Multiple are supported:
+// all are attached to the Jira issue and sent to the AI for context.
+let bwImages: string[] = [];
 
 interface BugReport {
   title: string;
@@ -32,32 +33,52 @@ function fileToDataUrl(file: Blob): Promise<string> {
   });
 }
 
-function setBwImage(dataUrl: string): void {
-  bwImage = dataUrl;
-  const img = $("bw-preview") as HTMLImageElement;
-  img.src = dataUrl;
-  show(img, true);
-  show($("bw-drop-hint"), false);
-  show($("bw-clear-img"), true);
-}
-
-function clearBwImage(): void {
-  bwImage = null;
-  ($("bw-file") as HTMLInputElement).value = "";
-  show($("bw-preview"), false);
-  show($("bw-drop-hint"), true);
-  show($("bw-clear-img"), false);
-}
-
-/** Accept the first image from a File list / DataTransfer items. */
-async function acceptBwImageFrom(files: FileList | null): Promise<void> {
-  const file = files && Array.from(files).find((f) => f.type.startsWith("image/"));
-  if (!file) return;
-  try {
-    setBwImage(await fileToDataUrl(file));
-  } catch (e) {
-    toast(`Gagal baca gambar: ${errStr(e)}`, "error");
+/** Re-render the thumbnail strip from `bwImages`. Each thumb has a ✕ remover. */
+function renderBwThumbs(): void {
+  const wrap = $("bw-thumbs");
+  wrap.innerHTML = "";
+  for (let i = 0; i < bwImages.length; i++) {
+    const thumb = document.createElement("div");
+    thumb.className = "bw-thumb";
+    const img = document.createElement("img");
+    img.src = bwImages[i];
+    img.alt = `screenshot ${i + 1}`;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "bw-thumb-rm";
+    rm.title = "Hapus gambar ini";
+    rm.textContent = "✕";
+    rm.dataset.idx = String(i);
+    thumb.appendChild(img);
+    thumb.appendChild(rm);
+    wrap.appendChild(thumb);
   }
+  show(wrap, bwImages.length > 0);
+}
+
+function clearBwImages(): void {
+  bwImages = [];
+  ($("bw-file") as HTMLInputElement).value = "";
+  renderBwThumbs();
+}
+
+function removeBwImage(index: number): void {
+  bwImages.splice(index, 1);
+  renderBwThumbs();
+}
+
+/** Accept every image in a File list / array, appending to the strip. */
+async function acceptBwImagesFrom(files: FileList | File[] | null): Promise<void> {
+  const imgs = files ? Array.from(files).filter((f) => f.type.startsWith("image/")) : [];
+  if (imgs.length === 0) return;
+  for (const file of imgs) {
+    try {
+      bwImages.push(await fileToDataUrl(file));
+    } catch (e) {
+      toast(`Gagal baca gambar: ${errStr(e)}`, "error");
+    }
+  }
+  renderBwThumbs();
 }
 
 /** Fill the Bug Writer project dropdown (defaulting to the configured project). */
@@ -98,7 +119,7 @@ async function loadBwAssignees(project: string): Promise<void> {
 function openBugWriter(): void {
   // Reset to a clean input state every open.
   ($("bw-text") as HTMLTextAreaElement).value = "";
-  clearBwImage();
+  clearBwImages();
   show($("bw-result"), false);
   show($("bugwriter-overlay"), true);
   // Default the output language to the global AI language (still overridable here).
@@ -125,7 +146,7 @@ function bwSelectedSections(): string[] {
 
 async function generateBug(): Promise<void> {
   const text = ($("bw-text") as HTMLTextAreaElement).value;
-  if (!text.trim() && !bwImage) {
+  if (!text.trim() && bwImages.length === 0) {
     toast("Isi deskripsi bug atau lampirkan screenshot dulu.", "error");
     return;
   }
@@ -143,7 +164,7 @@ async function generateBug(): Promise<void> {
   try {
     const report = await invoke<BugReport>("generate_bug_report", {
       text,
-      imageBase64: bwImage ?? undefined,
+      images: bwImages,
       language,
       sections,
     });
@@ -186,7 +207,7 @@ async function createBug(): Promise<void> {
       body,
       priority,
       assigneeId,
-      imageBase64: bwImage ?? undefined,
+      images: bwImages,
     });
     toast(`Bug dibuat: ${issue.key}`);
     void openUrl(issue.url).catch(() => {
@@ -209,17 +230,16 @@ export function wireBugWriter(): void {
     if (e.target === $("bugwriter-overlay")) closeBugWriter();
   });
 
-  // Screenshot: click to pick, drag-drop, or paste.
+  // Screenshot: click to pick, drag-drop, or paste — all append to the strip.
   const drop = $("bw-drop");
-  drop.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).id !== "bw-clear-img") ($("bw-file") as HTMLInputElement).click();
-  });
+  drop.addEventListener("click", () => ($("bw-file") as HTMLInputElement).click());
   $("bw-file").addEventListener("change", (e) =>
-    void acceptBwImageFrom((e.target as HTMLInputElement).files)
+    void acceptBwImagesFrom((e.target as HTMLInputElement).files)
   );
-  $("bw-clear-img").addEventListener("click", (e) => {
-    e.stopPropagation();
-    clearBwImage();
+  // Remove a single thumbnail (event-delegated on its ✕ button).
+  $("bw-thumbs").addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest(".bw-thumb-rm") as HTMLElement | null;
+    if (btn?.dataset.idx) removeBwImage(Number(btn.dataset.idx));
   });
   drop.addEventListener("dragover", (e) => {
     e.preventDefault();
@@ -229,21 +249,22 @@ export function wireBugWriter(): void {
   drop.addEventListener("drop", (e) => {
     e.preventDefault();
     drop.classList.remove("bw-drag");
-    void acceptBwImageFrom((e as DragEvent).dataTransfer?.files ?? null);
+    void acceptBwImagesFrom((e as DragEvent).dataTransfer?.files ?? null);
   });
-  // Paste anywhere while the overlay is open.
+  // Paste anywhere while the overlay is open — accepts multiple pasted images.
   $("bugwriter-overlay").addEventListener("paste", (e) => {
     const items = (e as ClipboardEvent).clipboardData?.items;
     if (!items) return;
+    const files: File[] = [];
     for (const it of Array.from(items)) {
       if (it.kind === "file" && it.type.startsWith("image/")) {
         const file = it.getAsFile();
-        if (file) {
-          e.preventDefault();
-          void acceptBwImageFrom(({ 0: file, length: 1, item: () => file } as unknown) as FileList);
-        }
-        return;
+        if (file) files.push(file);
       }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      void acceptBwImagesFrom(files);
     }
   });
 
