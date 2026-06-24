@@ -63,6 +63,15 @@ pub struct AppConfig {
     /// "English". Empty/legacy configs default to "Indonesia" in `load_config`.
     #[serde(default)]
     pub ai_language: String,
+    /// Read-only presence flags for the masked secrets. Set by `get_config` so
+    /// the frontend can tell "a token is saved" without ever receiving its
+    /// value. Ignored on the way in (saving never persists these).
+    #[serde(default)]
+    pub has_jira_token: bool,
+    #[serde(default)]
+    pub has_github_token: bool,
+    #[serde(default)]
+    pub has_gemini_key: bool,
 }
 
 const DEFAULT_STORY_POINT_FIELD: &str = "customfield_10016";
@@ -86,6 +95,11 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         ai_language: get("ai_language")?
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Indonesia".to_string()),
+        // Presence flags are a get_config concern only; the loaded config holds
+        // the real secrets, so leave them false here.
+        has_jira_token: false,
+        has_github_token: false,
+        has_gemini_key: false,
     })
 }
 
@@ -118,16 +132,27 @@ where
 
 fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     let set = |k: &str, v: &str| db::set_config(conn, k, v).map_err(|e| e.to_string());
+    // A secret is only overwritten when the frontend sends a non-empty value;
+    // an empty field means "unchanged" (the frontend never receives the stored
+    // value, so it can't echo it back). This keeps the masked round-trip
+    // lossless — open Settings, save, and your tokens survive.
+    let set_secret = |k: &str, v: &str| {
+        if v.trim().is_empty() {
+            Ok(())
+        } else {
+            set(k, v)
+        }
+    };
     set("jira_base_url", &cfg.jira_base_url)?;
     set("jira_email", &cfg.jira_email)?;
-    set("jira_token", &cfg.jira_token)?;
+    set_secret("jira_token", &cfg.jira_token)?;
     set("jira_story_point_field", &cfg.jira_story_point_field)?;
     set("jira_project", &cfg.jira_project)?;
     set("jira_assignee", &cfg.jira_assignee)?;
     set("jira_status_category", &cfg.jira_status_category)?;
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
-    set("github_token", &cfg.github_token)?;
-    set("gemini_api_key", &cfg.gemini_api_key)?;
+    set_secret("github_token", &cfg.github_token)?;
+    set_secret("gemini_api_key", &cfg.gemini_api_key)?;
     set("ai_language", &cfg.ai_language)?;
     Ok(())
 }
@@ -485,7 +510,17 @@ pub fn screen_recording_ok() -> Result<bool, String> {
 #[tauri::command]
 pub fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
     let conn = state.conn()?;
-    load_config(&conn)
+    let mut cfg = load_config(&conn)?;
+    // Never ship the actual secrets to the frontend. Surface only whether each
+    // one is set, then blank the values. Saving with an empty secret preserves
+    // the stored one (see `save_config`), so a blanked round-trip is lossless.
+    cfg.has_jira_token = !cfg.jira_token.trim().is_empty();
+    cfg.has_github_token = !cfg.github_token.trim().is_empty();
+    cfg.has_gemini_key = !cfg.gemini_api_key.trim().is_empty();
+    cfg.jira_token = String::new();
+    cfg.github_token = String::new();
+    cfg.gemini_api_key = String::new();
+    Ok(cfg)
 }
 
 #[tauri::command]

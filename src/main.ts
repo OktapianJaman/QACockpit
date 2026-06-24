@@ -1368,6 +1368,16 @@ async function openSettings(): Promise<void> {
       if (JIRA_DROPDOWN_KEYS.includes(k)) continue; // seeded via dedicated helpers
       ($(`cfg-${k}`) as HTMLInputElement).value = cfg[k] ?? "";
     }
+    // Secrets are never returned by the backend; show a hint when one is saved
+    // so the empty field doesn't read as "no token". Leaving it blank on save
+    // keeps the stored token (only a typed value replaces it).
+    const savedHint = (id: string, present: boolean | undefined): void => {
+      const el = $(id) as HTMLInputElement;
+      el.placeholder = present ? "•••••••• (tersimpan — isi untuk ganti)" : "••••••••";
+    };
+    savedHint("cfg-jira_token", cfg.has_jira_token);
+    savedHint("cfg-github_token", cfg.has_github_token);
+    savedHint("cfg-gemini_api_key", cfg.has_gemini_key);
     seedFieldDropdown(cfg.jira_story_point_field ?? "");
     seedProjectDropdown(cfg.jira_project ?? "");
     seedAssigneeDropdown(cfg.jira_assignee ?? "");
@@ -1381,7 +1391,7 @@ async function openSettings(): Promise<void> {
   // to click "Muat dari Jira" every time they open Settings.
   try {
     const cfg = await invoke<AppConfig>("get_config");
-    if (cfg.jira_base_url && cfg.jira_email && cfg.jira_token) {
+    if (cfg.jira_base_url && cfg.jira_email && cfg.has_jira_token) {
       await loadFromJira();
     }
   } catch {

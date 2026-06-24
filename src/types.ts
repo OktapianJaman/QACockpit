@@ -71,4 +71,22 @@ export interface AppConfig {
   github_token: string;
   gemini_api_key: string;
   ai_language: string;
+  /** Read-only presence flags from the backend; the secret values themselves
+   *  are never sent to the frontend (get_config blanks them). */
+  has_jira_token?: boolean;
+  has_github_token?: boolean;
+  has_gemini_key?: boolean;
 }
+
+/** The persisted, string-valued config keys (excludes the read-only has_* flags). */
+export type ConfigKey =
+  | "jira_base_url"
+  | "jira_email"
+  | "jira_token"
+  | "jira_story_point_field"
+  | "jira_project"
+  | "jira_assignee"
+  | "jira_sprint_scope"
+  | "github_token"
+  | "gemini_api_key"
+  | "ai_language";

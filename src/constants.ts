@@ -3,10 +3,10 @@
 // scattered inline. Change them here without touching core logic.
 // ---------------------------------------------------------------------------
 
-import type { AppConfig } from "./types";
+import type { ConfigKey } from "./types";
 
 /** Config keys persisted to the backend, in Settings-form order. */
-export const CONFIG_KEYS: (keyof AppConfig)[] = [
+export const CONFIG_KEYS: ConfigKey[] = [
   "jira_base_url",
   "jira_email",
   "jira_token",
