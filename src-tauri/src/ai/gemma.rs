@@ -768,6 +768,10 @@ fn strip_title_prefix(line: &str) -> Option<&str> {
 /// (`text` + `image_url`); a bare base64 string is wrapped into a PNG data URL,
 /// while an existing `data:` URL is passed through. Without an image, `content`
 /// is a plain string (identical to [`build_chat_request`]).
+///
+/// Superseded for callers by [`build_vision_request_multi`]; retained (and
+/// exercised by tests) as the single-image reference path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_vision_request(model: &str, prompt: &str, image_base64: Option<&str>) -> Value {
     let content = match image_base64 {
         Some(img) => {
