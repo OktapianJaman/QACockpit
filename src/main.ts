@@ -22,7 +22,7 @@ import { displayColumn, orderedColumns } from "./board-logic";
 import { $, show, toast, errStr, addCopyButton, initTheme, toggleTheme } from "./dom";
 import { wireBugWriter, closeBugWriter, openBugWriter } from "./bugwriter";
 import { wireAnnotator, cancelAnnotator } from "./annotate";
-import { wirePalette, closePalette, type PaletteCommand } from "./palette";
+import { wirePalette, openPalette, closePalette, type PaletteCommand } from "./palette";
 
 // ---------------------------------------------------------------------------
 // Kanban board
@@ -1871,6 +1871,7 @@ function wireEvents(): void {
   wireBugWriter();
   wireAnnotator();
   wirePalette(paletteCommands);
+  $("palette-btn").addEventListener("click", openPalette);
   wireSummary();
   wireTicketBuilder();
 }

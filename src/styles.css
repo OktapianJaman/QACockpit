@@ -1896,6 +1896,16 @@ h2 {
 }
 
 /* Command palette (⌘K) */
+.kbd {
+  display: inline-block;
+  font: 11px/1.4 ui-monospace, monospace;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0.75;
+  vertical-align: middle;
+}
 #palette-overlay {
   align-items: flex-start;
   justify-content: center;

@@ -59,7 +59,7 @@ function update(): void {
   render();
 }
 
-function openPalette(): void {
+export function openPalette(): void {
   const input = $("palette-input") as HTMLInputElement;
   input.value = "";
   update();
