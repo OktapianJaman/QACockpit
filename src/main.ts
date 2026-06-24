@@ -20,8 +20,9 @@ import { esc, mdInline, mdToHtml } from "./markdown";
 import { fmtPoints, pointsLabel } from "./format";
 import { displayColumn, orderedColumns } from "./board-logic";
 import { $, show, toast, errStr, addCopyButton, initTheme, toggleTheme } from "./dom";
-import { wireBugWriter, closeBugWriter } from "./bugwriter";
+import { wireBugWriter, closeBugWriter, openBugWriter } from "./bugwriter";
 import { wireAnnotator, cancelAnnotator } from "./annotate";
+import { wirePalette, closePalette, type PaletteCommand } from "./palette";
 
 // ---------------------------------------------------------------------------
 // Kanban board
@@ -409,6 +410,61 @@ async function onPickTransition(key: string, t: JiraTransition): Promise<void> {
   } catch (e) {
     toast(`Gagal ubah status: ${errStr(e)}`, "error");
   }
+}
+
+/** Set a ticket to a target status by name (used by the command palette): find
+ *  the Jira transition whose destination matches, then run the normal pick flow
+ *  (actual-point prompt for verdicts, confirm, transition, refresh). */
+async function setTicketStatus(key: string, target: string): Promise<void> {
+  let trans: JiraTransition[];
+  try {
+    trans = await invoke<JiraTransition[]>("list_transitions", { key });
+  } catch (e) {
+    toast(`Gagal ambil transisi: ${errStr(e)}`, "error");
+    return;
+  }
+  const tl = target.toLowerCase();
+  const match =
+    trans.find((t) => (t.to_status || "").toLowerCase() === tl) ??
+    trans.find((t) => (t.to_status || "").toLowerCase().includes(tl)) ??
+    trans.find((t) => t.name.toLowerCase().includes(tl));
+  if (!match) {
+    toast(`${key}: nggak ada transisi ke "${target}".`, "error");
+    return;
+  }
+  await onPickTransition(key, match);
+}
+
+// Statuses offered per ticket in the command palette (e.g. "QAT-101 → QA Passed").
+const PALETTE_STATUSES = ["QA Passed", "QA Failed", "QA In Progress", "Ready for QA", "Today", "Done"];
+
+/** Build the command-palette command list from current app state. Re-read on
+ *  every keystroke, so it always reflects the live board. */
+function paletteCommands(): PaletteCommand[] {
+  const cmds: PaletteCommand[] = [
+    { title: "Sync sekarang", subtitle: "tarik tiket & PR terbaru", run: () => void doSync() },
+    { title: "Refresh board", run: () => void refreshBoard() },
+    { title: "Bug baru", subtitle: "buka Bug Writer", run: () => openBugWriter() },
+    { title: "Ringkasan harian", subtitle: "daily summary", run: () => void openSummary() },
+    { title: "Ticket Builder", subtitle: "bikin Story massal dari epic", run: () => openTicketBuilder() },
+    { title: "Settings", subtitle: "kredensial Jira / GitHub / Gemini", run: () => void openSettings() },
+    { title: "Ganti tema", subtitle: "gelap / terang", run: () => toggleTheme() },
+  ];
+  for (const t of boardTickets) {
+    cmds.push({
+      title: `Buka ${t.key}`,
+      subtitle: t.summary,
+      run: () => void openDetail(t.key),
+    });
+    for (const s of PALETTE_STATUSES) {
+      cmds.push({
+        title: `${t.key} → ${s}`,
+        subtitle: t.summary,
+        run: () => void setTicketStatus(t.key, s),
+      });
+    }
+  }
+  return cmds;
 }
 
 /** Handle a card dropped on a column: pick the transition that leads to that
@@ -1692,6 +1748,7 @@ function wireEvents(): void {
     }
     if (e.key === "Escape") {
       const overlays: Array<[string, () => void]> = [
+        ["palette-overlay", closePalette],
         ["annotate-overlay", cancelAnnotator],
         ["bugwriter-overlay", closeBugWriter],
         ["ticket-overlay", closeTicketBuilder],
@@ -1813,6 +1870,7 @@ function wireEvents(): void {
 
   wireBugWriter();
   wireAnnotator();
+  wirePalette(paletteCommands);
   wireSummary();
   wireTicketBuilder();
 }

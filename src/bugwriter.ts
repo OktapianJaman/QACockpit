@@ -202,7 +202,7 @@ async function loadBwAssignees(project: string): Promise<void> {
   }
 }
 
-function openBugWriter(): void {
+export function openBugWriter(): void {
   // Reset to a clean input state every open.
   ($("bw-text") as HTMLTextAreaElement).value = "";
   clearBwImages();
