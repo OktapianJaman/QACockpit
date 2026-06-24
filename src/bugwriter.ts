@@ -67,6 +67,25 @@ function removeBwImage(index: number): void {
   renderBwThumbs();
 }
 
+/** Snip a screen region via the OS (macOS) and append it to the strip. */
+async function snipRegion(): Promise<void> {
+  const btn = $<HTMLButtonElement>("bw-snip");
+  btn.disabled = true;
+  btn.classList.add("busy");
+  try {
+    const dataUrl = await invoke<string | null>("capture_screen_region");
+    if (dataUrl) {
+      bwImages.push(dataUrl);
+      renderBwThumbs();
+    }
+  } catch (e) {
+    toast(`Gagal capture: ${errStr(e)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+  }
+}
+
 /** Accept every image in a File list / array, appending to the strip. */
 async function acceptBwImagesFrom(files: FileList | File[] | null): Promise<void> {
   const imgs = files ? Array.from(files).filter((f) => f.type.startsWith("image/")) : [];
@@ -233,6 +252,7 @@ export function wireBugWriter(): void {
   // Screenshot: click to pick, drag-drop, or paste — all append to the strip.
   const drop = $("bw-drop");
   drop.addEventListener("click", () => ($("bw-file") as HTMLInputElement).click());
+  $("bw-snip").addEventListener("click", () => void snipRegion());
   $("bw-file").addEventListener("change", (e) =>
     void acceptBwImagesFrom((e.target as HTMLInputElement).files)
   );

@@ -1816,6 +1816,9 @@ h2 {
 .bw-thumb-rm:hover {
   background: rgba(200, 30, 30, 0.9);
 }
+.bw-capture-row {
+  margin: -4px 0 12px;
+}
 .bw-opts {
   display: flex;
   gap: 18px;

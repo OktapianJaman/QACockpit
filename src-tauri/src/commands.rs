@@ -1222,6 +1222,47 @@ pub async fn create_jira_bug(
     .await
 }
 
+/// Capture a user-selected screen region and return it as a PNG data URL, or
+/// `None` if the user cancelled the selection. macOS only (uses the built-in
+/// `screencapture -i`); other platforms return an error so the UI can hide the
+/// button gracefully.
+#[tauri::command]
+pub fn capture_screen_region() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use base64::Engine;
+        let mut path = std::env::temp_dir();
+        path.push("qacockpit-region-capture.png");
+        // Clear any stale file so a cancelled capture can't resurface an old one.
+        let _ = std::fs::remove_file(&path);
+
+        // `-i` = interactive region/window selection. Esc-cancel exits 0 but
+        // writes no file.
+        let status = std::process::Command::new("screencapture")
+            .args(["-i", "-t", "png"])
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("gagal menjalankan screencapture: {e}"))?;
+        if !status.success() {
+            return Err("Capture gagal".into());
+        }
+        if !path.exists() {
+            return Ok(None); // user pressed Esc
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("gagal baca hasil capture: {e}"))?;
+        let _ = std::fs::remove_file(&path);
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(Some(format!("data:image/png;base64,{b64}")))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Region capture cuma didukung di macOS".into())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ticket Builder (bulk Story creation under an epic)
 // ---------------------------------------------------------------------------
