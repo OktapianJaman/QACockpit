@@ -22,6 +22,14 @@ export const CONFIG_KEYS: ConfigKey[] = [
 /** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */
 export const KNOWN_REPOS = ["tr8team/gotradeindoapp", "tr8team/tradecharlieflutter"];
 
+/** Maps the `[GTI]`/`[GTG]` tag in a Jira ticket summary to its GitHub repo.
+ *  GTI = Gotradeindonesia, GTG = Tradecharlie. Used to auto-resolve the PR a
+ *  ticket refers to (e.g. "[GTG] … #3182" → tr8team/tradecharlieflutter#3182). */
+export const REPO_TAGS: Record<string, string> = {
+  GTI: "tr8team/gotradeindoapp",
+  GTG: "tr8team/tradecharlieflutter",
+};
+
 /** localStorage key for the persisted light/dark theme. */
 export const THEME_KEY = "qacockpit-theme";
 

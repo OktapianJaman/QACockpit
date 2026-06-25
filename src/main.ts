@@ -19,6 +19,7 @@ import { CONFIG_KEYS, KNOWN_REPOS } from "./constants";
 import { esc, mdInline, mdToHtml } from "./markdown";
 import { fmtPoints, pointsLabel } from "./format";
 import { displayColumn, orderedColumns } from "./board-logic";
+import { parsePrRefsFromSummary } from "./pr-ref";
 import { $, show, toast, errStr, addCopyButton, initTheme, toggleTheme } from "./dom";
 import { wireBugWriter, closeBugWriter, openBugWriter } from "./bugwriter";
 import { wireAnnotator, cancelAnnotator } from "./annotate";
@@ -503,6 +504,22 @@ let detailKey: string | null = null;
 let jiraBrowseBase = "";
 // PRs linked to the open ticket (a ticket can span repos, e.g. native + flutter).
 let linkedPrs: PrRef[] = [];
+// Ticket key whose auto-populate run currently owns the loading banner (null =
+// idle). Tying it to a key avoids a stale run from ticket A hiding the banner
+// after the user has already switched to ticket B. `autoBusy` is the boolean the
+// manual action-button guards read.
+let autoBusyKey: string | null = null;
+let autoBusy = false;
+
+/** Show/refresh the auto-populate loading banner for `key` (null = hide) and
+ *  lock the action buttons so QA can't trigger a duplicate fetch/generate. */
+function setAutoBusy(key: string | null, text = ""): void {
+  autoBusyKey = key;
+  autoBusy = key !== null;
+  document.querySelector(".detail-panel")?.classList.toggle("auto-busy", autoBusy);
+  show($("detail-auto"), autoBusy);
+  if (autoBusy && text) $("detail-auto-text").textContent = text;
+}
 // Repos for the PR repo dropdown — a fixed, hardcoded list.
 const knownRepos: string[] = [...KNOWN_REPOS];
 
@@ -520,6 +537,7 @@ function populateRepoDropdown(): void {
 
 /** "+ Tambah PR" via the repo dropdown + number input. */
 async function addPrFromPicker(): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   const repo = ($("pr-repo") as HTMLSelectElement).value.trim();
   const numEl = $("pr-num") as HTMLInputElement;
   const number = Number(numEl.value.trim());
@@ -602,7 +620,77 @@ async function openDetail(key: string): Promise<void> {
   $("pr-empty").textContent = "Tempel link PR di atas (boleh lebih dari satu), atau cari otomatis.";
   selectTab("testcases");
   show($("detail-overlay"), true);
-  await loadTestCases(key);
+  const cases = await loadTestCases(key);
+  // Fire-and-forget: if the summary follows the "[GTG] … #3182" convention,
+  // resolve + attach the PR, summarize it, and seed test cases — all in the
+  // background so the modal is interactive immediately.
+  void autoPopulateFromSummary(key, cases.length);
+}
+
+/** Auto-complete a ticket from its summary convention ("[GTI]/[GTG] … #NNNN").
+ *  Attaches the referenced PR(s), generates each PR's AI summary when none is
+ *  cached, and seeds test cases when the ticket has none. Every step is guarded
+ *  on `detailKey` (a ticket switch mid-flight aborts cleanly) and idempotent —
+ *  reopening a ticket never regenerates work that already exists. */
+async function autoPopulateFromSummary(key: string, existingCases: number): Promise<void> {
+  const t = ticketByKey(key);
+  if (!t) return;
+  const refs = parsePrRefsFromSummary(t.summary);
+  if (refs.length === 0) return; // ticket doesn't follow the convention
+
+  setAutoBusy(key, "Lagi nyiapin tiket: ambil PR…");
+  try {
+    let added = false;
+    for (const r of refs) {
+      added =
+        addLinkedPr({
+          number: r.number,
+          repo: r.repo,
+          title: `PR #${r.number}`,
+          state: "",
+          url: `https://github.com/${r.repo}/pull/${r.number}`,
+        }) || added;
+    }
+    if (!added || detailKey !== key) return;
+    renderPrs();
+
+    // Summarize each PR that has no cached summary yet (sequential; gentle on AI).
+    const items = $("pr-list").querySelectorAll<HTMLElement>(".pr-item");
+    for (let i = 0; i < linkedPrs.length; i++) {
+      if (detailKey !== key) return;
+      const pr = linkedPrs[i];
+      const item = items[i];
+      const btn = item?.querySelector<HTMLButtonElement>(".pr-summarize");
+      const panel = item?.querySelector<HTMLDivElement>(".pr-review");
+      if (!btn || !panel) continue;
+      const st = await invoke<{ summary: string | null }>("get_pr_state", {
+        repo: pr.repo,
+        number: pr.number,
+      }).catch(() => null);
+      if (st?.summary) continue; // already summarized — keep the cache
+      setAutoBusy(key, `Lagi bikin ringkasan PR #${pr.number}…`);
+      await summarizePr(pr, btn, panel);
+    }
+
+    // Seed test cases only when the ticket has none (manual regen still available).
+    if (detailKey === key && existingCases === 0 && linkedPrs.length > 0) {
+      setAutoBusy(key, "Lagi bikin test case dari PR…");
+      const prs = linkedPrs.map((p) => ({ repo: p.repo, number: p.number }));
+      const created = await invoke<TestCase[]>("generate_test_cases_from_prs", {
+        key,
+        summary: t.summary,
+        prs,
+      });
+      if (detailKey === key) {
+        await loadTestCases(key);
+        if (created.length) toast(`${created.length} test case otomatis dari PR.`);
+      }
+    }
+  } catch (e) {
+    toast(errStr(e), "error");
+  } finally {
+    if (autoBusyKey === key) setAutoBusy(null); // don't clobber a newer ticket's run
+  }
 }
 
 /** Pill class for a test-case status. */
@@ -724,12 +812,14 @@ function renderTestCases(cases: TestCase[]): void {
 }
 
 /** Load + render the test cases for a key (no-op if the modal moved on). */
-async function loadTestCases(key: string): Promise<void> {
+async function loadTestCases(key: string): Promise<TestCase[]> {
   try {
     const cases = await invoke<TestCase[]>("list_test_cases", { key });
     if (detailKey === key) renderTestCases(cases);
+    return cases;
   } catch (e) {
     toast(`Gagal memuat test case: ${errStr(e)}`, "error");
+    return [];
   }
 }
 
@@ -789,6 +879,7 @@ async function addTestCase(e: Event): Promise<void> {
 
 /** "✨ Generate pakai AI": draft cases from the ticket summary (Gemini). */
 async function generateTestCases(): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   if (!detailKey) return;
   const key = detailKey;
   const summary = ticketByKey(key)?.summary || "";
@@ -1014,6 +1105,7 @@ function renderPrs(): void {
 
 /** Add a PR pasted as a GitHub URL to the list, then summarize it. */
 async function summarizeFromLink(): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   const input = $<HTMLInputElement>("pr-link");
   const url = input.value.trim();
   const m = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/i);
@@ -1045,6 +1137,7 @@ async function summarizeFromLink(): Promise<void> {
 
 /** "🔍 Cari PR": search GitHub for PRs mentioning the key; add them to the list. */
 async function searchPrs(): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   if (!detailKey) return;
   const key = detailKey;
   const btn = $<HTMLButtonElement>("pr-search");
@@ -1069,6 +1162,7 @@ async function searchPrs(): Promise<void> {
 
 /** Generate test cases from the COMBINED diffs of all linked PRs. */
 async function generateTestCasesFromAllPrs(btn: HTMLButtonElement): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   if (!detailKey || linkedPrs.length === 0) return;
   const key = detailKey;
   const summary = ticketByKey(key)?.summary || "";
@@ -1271,6 +1365,7 @@ async function generateTestCasesFromPr(
   pr: PrRef,
   btn: HTMLButtonElement
 ): Promise<void> {
+  if (autoBusy) return void toast("Sabar, tiket lagi disiapin otomatis…");
   if (!detailKey) return;
   const key = detailKey;
   const summary = ticketByKey(key)?.summary || "";
