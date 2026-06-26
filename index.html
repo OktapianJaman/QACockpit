@@ -81,8 +81,24 @@
             </div>
             <div class="tc-actions">
               <button id="tc-generate" class="btn small primary">✨ Generate pakai AI</button>
+              <button id="tc-triage" class="btn small" title="Klasifikasi & jalankan semua test case di tiket ini">🔎 Triage tiket</button>
+              <button id="tc-sync-develop" class="btn small" title="Merge origin/develop ke branch QA biar kode test terupdate (satu arah, nggak pernah balik ke develop)">⤓ Sync dari develop</button>
               <button id="tc-add-toggle" class="btn small">+ Tambah manual</button>
               <button id="tc-post-jira" class="btn small">📤 Kirim hasil ke Jira</button>
+            </div>
+            <div id="qa-branch-badge" class="qa-branch-badge hidden"></div>
+
+            <div id="triage-panel" class="triage-panel hidden">
+              <div class="triage-head">
+                <strong id="triage-title">Triage</strong>
+                <span id="triage-progress" class="triage-progress"></span>
+                <button id="tc-gen-all" class="btn small primary hidden" title="Generate test buat semua case 'buildable' sekaligus (case UI di-route ke manual otomatis)">⚙️ Generate semua buildable</button>
+                <button id="tc-run-all" class="btn small" title="Jalankan ulang SEMUA test ter-generate sekaligus (satu run, ~3× lebih cepat) — cek regresi cepat">▶ Run semua test</button>
+              </div>
+              <div id="run-all-result" class="run-all-result hidden"></div>
+              <div id="gen-bulk-progress" class="gen-bulk-progress hidden"></div>
+              <div id="triage-buckets" class="triage-buckets"></div>
+              <div id="triage-detail" class="triage-detail"></div>
             </div>
 
             <form id="tc-add-form" class="tc-add-form hidden">
@@ -310,6 +326,65 @@
       </div>
     </div>
 
+    <!-- Device Run drawer (live execution of a test case on the device) -->
+    <div id="devrun-overlay" class="overlay hidden">
+      <div class="devrun-panel card">
+        <div class="card-head">
+          <h2>🧪 Jalankan Test Case</h2>
+          <button id="devrun-close" class="btn icon-btn" title="Tutup">✕</button>
+        </div>
+        <div id="devrun-title" class="devrun-title">—</div>
+        <div class="devrun-controls">
+          <label class="devrun-dev-label">Device
+            <select id="devrun-device"></select>
+          </label>
+          <button id="devrun-refresh" class="btn small icon-btn" title="Refresh device">🔄</button>
+          <label class="devrun-dev-label">App
+            <select id="devrun-itest-app">
+              <option value="GTI">GTI · gotradeindo</option>
+              <option value="GTG">GTG · tradecharlie</option>
+            </select>
+          </label>
+          <span class="devrun-engine-tag">widget test</span>
+          <button id="devrun-start" class="btn primary devrun-start">▶ Start</button>
+          <button id="devrun-stop" class="btn devrun-stop hidden">⏹ Stop</button>
+        </div>
+        <div class="devrun-controls devrun-email-row">
+          <label class="devrun-dev-label devrun-email-label">Email login
+            <input type="text" id="devrun-email" placeholder="okta+amba1@tr8.io" autocomplete="off" spellcheck="false" />
+          </label>
+          <span class="devrun-cred-note">OTP <code>999999</code> · PIN <code>0000</code> (tetap)</span>
+        </div>
+        <!-- Firebase build picker — vision-only, hidden for the widget-test track -->
+        <div class="devrun-controls devrun-build-row hidden">
+          <label class="devrun-dev-label">App
+            <select id="devrun-app">
+              <option value="GTI">GTI · gotradeindo</option>
+              <option value="GTG">GTG · tradecharlie</option>
+            </select>
+          </label>
+          <label class="devrun-dev-label devrun-build-label">Build Firebase
+            <select id="devrun-build"></select>
+          </label>
+          <button id="devrun-build-refresh" class="btn small icon-btn" title="Refresh build dari Firebase">🔄</button>
+        </div>
+        <div class="devrun-body">
+          <div class="devrun-left">
+            <div class="devrun-edits-head">🔧 Test dijalankan (live)</div>
+            <ol id="devrun-edits" class="devrun-edits"></ol>
+            <ol id="devrun-phases" class="devrun-phases"></ol>
+            <div id="devrun-verdict" class="devrun-verdict hidden"></div>
+          </div>
+          <div class="devrun-right">
+            <div class="devrun-screen">
+              <img id="devrun-frame" alt="layar device" />
+              <div id="devrun-frame-empty" class="devrun-frame-empty">menunggu layar device…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings panel -->
     <div id="settings-overlay" class="overlay hidden">
       <div class="settings-panel card">
@@ -364,13 +439,6 @@
             <button type="button" id="gh-test-btn" class="btn small">🔌 Test koneksi</button>
             <small id="gh-test-status" class="test-status"></small>
           </div>
-          <label>GitHub Repos <span class="opt">(daftar tetap)</span>
-            <select id="github-repos-display">
-              <option>tr8team/gotradeindoapp</option>
-              <option>tr8team/tradecharlieflutter</option>
-            </select>
-            <small class="field-hint">Daftar repo sudah di-set tetap — dipakai di dropdown PR.</small>
-          </label>
           <label>Gemini API Key
             <input type="password" id="cfg-gemini_api_key" placeholder="AIza..." autocomplete="off" />
             <small class="field-hint">AI di app ini pakai Google Gemini. Ambil API key gratis di
@@ -391,6 +459,20 @@
               <option value="English">English</option>
             </select>
             <small class="field-hint">Bahasa hasil generate AI (test case, dll). Default Bug Writer juga ikut ini.</small>
+          </label>
+          <label>Repo GTI lokal (gotradeindoapp)
+            <div class="path-row">
+              <input type="text" id="cfg-gti_path" placeholder="/Users/kamu/Documents/gotradeindoapp" />
+              <button type="button" id="cfg-gti_path-pick" class="btn small">📁 Pilih…</button>
+            </div>
+            <small class="field-hint">Folder repo GTI di lokal — dipakai pipeline widget test + auto-gen test (branch <code>qa/automation-keys</code>).</small>
+          </label>
+          <label>Repo GTG lokal (tradecharlieflutter)
+            <div class="path-row">
+              <input type="text" id="cfg-gtg_path" placeholder="/Users/kamu/Documents/tradecharlieflutter" />
+              <button type="button" id="cfg-gtg_path-pick" class="btn small">📁 Pilih…</button>
+            </div>
+            <small class="field-hint">Folder repo GTG di lokal (opsional) — buat instrumentasi app kedua.</small>
           </label>
           <div class="settings-about">
             <span class="settings-version">QA Cockpit <span id="app-version">…</span></span>

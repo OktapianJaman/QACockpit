@@ -18,6 +18,8 @@ export interface TestCase {
   expected: string;
   status: string;
   notes: string;
+  /** Why the last device run gave its verdict (esp. NOT-AUTO / fail). */
+  verdict_reason?: string;
 }
 
 export interface ChatMsg {
@@ -71,6 +73,10 @@ export interface AppConfig {
   github_token: string;
   gemini_api_key: string;
   ai_language: string;
+  /** Absolute path to the local GTI Flutter repo (for the instrumentation pipeline). */
+  gti_path: string;
+  /** Absolute path to the local GTG Flutter repo (tradecharlieflutter). */
+  gtg_path: string;
   /** Read-only presence flags from the backend; the secret values themselves
    *  are never sent to the frontend (get_config blanks them). */
   has_jira_token?: boolean;
@@ -89,4 +95,6 @@ export type ConfigKey =
   | "jira_sprint_scope"
   | "github_token"
   | "gemini_api_key"
-  | "ai_language";
+  | "ai_language"
+  | "gti_path"
+  | "gtg_path";

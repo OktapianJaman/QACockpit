@@ -1,4 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -612,6 +614,11 @@ async function openDetail(key: string): Promise<void> {
   $("tc-list").innerHTML = "";
   show($("tc-empty"), false);
   $("tc-counter").textContent = "";
+  // Reset triage panel from any previous ticket.
+  show($("triage-panel"), false);
+  triageCases = [];
+  $("triage-buckets").innerHTML = "";
+  $("triage-detail").innerHTML = "";
   // Reset the PR tab (clear linked PRs from the previous ticket).
   linkedPrs = [];
   populateRepoDropdown();
@@ -621,6 +628,7 @@ async function openDetail(key: string): Promise<void> {
   selectTab("testcases");
   show($("detail-overlay"), true);
   const cases = await loadTestCases(key);
+  void refreshQaBranchBadge(); // show if the QA branch is behind develop
   // Fire-and-forget: if the summary follows the "[GTG] … #3182" convention,
   // resolve + attach the PR, summarize it, and seed test cases — all in the
   // background so the modal is interactive immediately.
@@ -697,12 +705,16 @@ async function autoPopulateFromSummary(key: string, existingCases: number): Prom
 function tcStatusClass(status: string): string {
   if (status === "passed") return "tc-pill passed";
   if (status === "failed") return "tc-pill failed";
+  if (status === "not_auto") return "tc-pill not-auto";
+  if (status === "running") return "tc-pill running";
   return "tc-pill untested";
 }
 
 function tcStatusLabel(status: string): string {
   if (status === "passed") return "✅ passed";
   if (status === "failed") return "❌ failed";
+  if (status === "not_auto") return "🚩 not-auto";
+  if (status === "running") return "⏳ jalan…";
   return "untested";
 }
 
@@ -760,18 +772,30 @@ function renderTestCases(cases: TestCase[]): void {
       : "";
     // The detail panel always exists now (it hosts the editable notes field),
     // even when a case has no steps/expected.
+    // A [manual] marker means the verdict was hand-set via the ✅/❌ buttons, not
+    // produced by automation — surface that honestly instead of as a real result.
+    const isManual = (c.verdict_reason ?? "").startsWith("[manual]");
+    const reasonHtml = isManual
+      ? `<div class="tc-reason manual">✋ Status di-set manual oleh QA (bukan hasil automation)</div>`
+      : c.verdict_reason
+        ? `<div class="tc-reason ${c.status === "not_auto" ? "not-auto" : "fail"}">
+             ${c.status === "not_auto" ? "🚩" : "❌"} ${esc(c.verdict_reason)}
+           </div>`
+        : "";
     item.innerHTML = `
       <div class="tc-item-head">
-        <span class="${tcStatusClass(c.status)}">${esc(tcStatusLabel(c.status))}</span>
+        <span class="${tcStatusClass(c.status)}${isManual ? " manual" : ""}">${esc(tcStatusLabel(c.status))}${isManual ? " · ✋manual" : ""}</span>
         <span class="tc-title">${esc(c.title)}</span>
         <button class="tc-toggle" type="button" title="Lihat detail">▾</button>
         <div class="tc-item-actions">
+          <button class="btn small primary tc-run" type="button" title="Jalankan test case (widget test)">▶</button>
           <button class="btn small tc-pass" type="button" title="Pass">✅</button>
           <button class="btn small tc-fail" type="button" title="Fail">❌</button>
           <button class="btn small tc-del" type="button" title="Hapus">🗑</button>
         </div>
       </div>
       <div class="tc-detail">
+        ${reasonHtml}
         ${stepsHtml}
         ${expectedHtml}
         <div class="tc-field">
@@ -797,6 +821,9 @@ function renderTestCases(cases: TestCase[]): void {
       void saveTestCaseNotes(c.id, notes);
     });
 
+    item.querySelector<HTMLButtonElement>(".tc-run")?.addEventListener("click", () =>
+      void runOnDevice(c.id, c.title)
+    );
     item.querySelector<HTMLButtonElement>(".tc-pass")?.addEventListener("click", () =>
       void setTestCaseStatus(c.id, "passed")
     );
@@ -825,6 +852,11 @@ async function loadTestCases(key: string): Promise<TestCase[]> {
 
 async function setTestCaseStatus(id: number, status: string): Promise<void> {
   if (!detailKey) return;
+  const label = status === "passed" ? "PASSED" : status === "failed" ? "FAILED" : status;
+  const ok = await confirmDialog(
+    `Set status ke ${label} secara MANUAL?\n\nIni override manual (bukan hasil automation) dan bakal ditandai "✋manual". Buat hasil sebenarnya, pakai tombol ▶ (run).`,
+  );
+  if (!ok) return;
   try {
     await invoke("set_test_case_status", { id, status });
   } catch (e) {
@@ -853,6 +885,688 @@ async function deleteTestCase(id: number, title: string): Promise<void> {
     toast(`Gagal hapus test case: ${errStr(e)}`, "error");
   }
   await loadTestCases(detailKey);
+}
+
+// --- Device Run drawer: live execution of a test case on the device ----------
+
+interface DevRunMsg {
+  id: number;
+  t: "phase" | "frame" | "log" | "verdict" | "done" | "progress" | "edit";
+  key?: string;
+  label?: string;
+  state?: string;
+  png?: string;
+  msg?: string;
+  verdict?: string;
+  reason?: string;
+  status?: string;
+  pct?: number | null;
+  downloaded?: number;
+  total?: number;
+  file?: string;
+  line?: number;
+  snippet?: string;
+  action?: string;
+}
+
+/** id of the test case loaded in the drawer (null = none open). */
+let devrunActiveId: number | null = null;
+/** true while a device run is in flight (guards close / double-start). */
+let devrunRunning = false;
+
+/** Clear the drawer's run output (phases/verdict/frame) for a fresh case. */
+function devrunReset(id: number, title: string): void {
+  devrunActiveId = id;
+  $("devrun-title").textContent = title;
+  $("devrun-phases").innerHTML = "";
+  $("devrun-edits").innerHTML = "";
+  const v = $("devrun-verdict");
+  v.className = "devrun-verdict hidden";
+  v.textContent = "";
+  const img = $("devrun-frame") as HTMLImageElement;
+  img.removeAttribute("src");
+  show($("devrun-frame-empty"), true);
+}
+
+/** Default test-login email per app (used until the user customizes it). */
+const DEFAULT_EMAIL: Record<string, string> = {
+  GTI: "okta+amba1@tr8.io",
+  GTG: "",
+};
+
+/** Load the saved (or default) login email for the currently-selected app into
+ *  the drawer's email field. Persisted per app in localStorage. */
+function devrunLoadEmail(): void {
+  const appKey = ($("devrun-itest-app") as HTMLSelectElement).value;
+  const saved = localStorage.getItem(`qa_email_${appKey}`);
+  ($("devrun-email") as HTMLInputElement).value = saved ?? DEFAULT_EMAIL[appKey] ?? "";
+}
+
+/** Populate the device dropdown from `adb devices`; disable Start when none. */
+async function loadDevrunDevices(): Promise<void> {
+  const sel = $("devrun-device") as HTMLSelectElement;
+  const start = $("devrun-start") as HTMLButtonElement;
+  try {
+    const devs = await invoke<string[]>("list_adb_devices");
+    sel.innerHTML = "";
+    if (devs.length === 0) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "(tidak ada device)";
+      sel.appendChild(o);
+      start.disabled = true;
+    } else {
+      for (const d of devs) {
+        const o = document.createElement("option");
+        o.value = d;
+        o.textContent = d;
+        sel.appendChild(o);
+      }
+      start.disabled = devrunRunning;
+    }
+  } catch (e) {
+    toast(`Gagal baca device: ${errStr(e)}`, "error");
+  }
+}
+
+function devrunPhase(key: string, label: string, state: string): void {
+  const list = $("devrun-phases");
+  let li = list.querySelector<HTMLElement>(`[data-phase="${key}"]`);
+  if (!li) {
+    li = document.createElement("li");
+    li.dataset.phase = key;
+    list.appendChild(li);
+  }
+  li.dataset.label = label;
+  li.className = state === "done" ? "done" : "active";
+  li.innerHTML = `<span class="devrun-ph-icon">${state === "done" ? "✔" : "⏳"}</span> ${esc(label)}`;
+}
+
+/** Show a download progress bar + % on a phase row (e.g. the Firebase APK fetch). */
+function devrunProgress(key: string, pct: number | null, downloaded: number, total: number): void {
+  const li = $("devrun-phases").querySelector<HTMLElement>(`[data-phase="${key}"]`);
+  if (!li) return;
+  const mb = (n: number): string => (n / 1048576).toFixed(1);
+  const sub = total ? `${pct ?? 0}% · ${mb(downloaded)}/${mb(total)} MB` : `${mb(downloaded)} MB`;
+  const width = total && pct != null ? pct : 0;
+  li.className = "active";
+  li.innerHTML = `<span class="devrun-ph-icon">⏳</span> ${esc(li.dataset.label ?? "")}
+    <span class="devrun-pct">${esc(sub)}</span>
+    <div class="devrun-bar"><div class="devrun-bar-fill" style="width:${width}%"></div></div>`;
+}
+
+/** Append a live-coding entry: a QA Key the instrumenter added/found in source. */
+function devrunEdit(e: DevRunMsg): void {
+  const list = $("devrun-edits");
+  const act =
+    e.action === "added" ? "➕ ditambahkan"
+    : e.action === "present" ? "✓ sudah ada"
+    : e.action === "missing" ? "⚠ file hilang"
+    : e.action === "skip" ? "⚠ anchor tak ketemu"
+    : (e.action ?? "");
+  const li = document.createElement("li");
+  li.className = `devrun-edit ${e.action ?? ""}`;
+  li.innerHTML = `<div class="devrun-edit-head"><code>${esc(e.key ?? "")}</code><span class="devrun-edit-act">${esc(act)}</span></div>
+    <div class="devrun-edit-loc">${esc(e.file ?? "")}${e.line ? `:${e.line}` : ""}</div>
+    ${e.snippet ? `<pre class="devrun-edit-snip">${esc(e.snippet)}</pre>` : ""}`;
+  list.appendChild(li);
+  list.scrollTop = list.scrollHeight;
+}
+
+function devrunVerdict(verdict: string, reason: string): void {
+  const map: Record<string, string> = {
+    pass: "🟢 AUTO-PASS",
+    fail: "🔴 AUTO-FAIL",
+    not_auto: "🚩 NOT-AUTO — perlu tes manual",
+  };
+  const v = $("devrun-verdict");
+  v.className = `devrun-verdict ${verdict}`;
+  v.innerHTML = `<strong>${map[verdict] ?? map.not_auto}</strong>${
+    reason ? `<div class="devrun-reason">${esc(reason)}</div>` : ""
+  }`;
+}
+
+interface FbBuild {
+  version: string;
+  date: string;
+  notes: string;
+}
+
+/** Populate the Firebase build dropdown for the selected app. The first option
+ *  ("pakai yang sudah keinstall") skips download and runs the installed app. */
+async function loadFirebaseBuilds(): Promise<void> {
+  const sel = $("devrun-build") as HTMLSelectElement;
+  const app = ($("devrun-app") as HTMLSelectElement).value;
+  sel.innerHTML = '<option value="">⏳ memuat dari Firebase…</option>';
+  try {
+    const builds = await invoke<FbBuild[]>("list_firebase_builds", { app });
+    sel.innerHTML = "";
+    const skip = document.createElement("option");
+    skip.value = "";
+    skip.textContent = "— pakai app yang sudah keinstall —";
+    sel.appendChild(skip);
+    for (const b of builds) {
+      const o = document.createElement("option");
+      o.value = b.version;
+      o.textContent = `${b.version}  ·  ${b.date}`;
+      sel.appendChild(o);
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">(gagal load Firebase)</option>';
+    toast(`Gagal load build Firebase: ${errStr(e)}`, "error");
+  }
+}
+
+/** ▶ on a test case: open the drawer in config state (pick device, then Start). */
+async function runOnDevice(id: number, title: string): Promise<void> {
+  if (devrunRunning) {
+    toast("Masih ada run yang jalan — tunggu selesai.", "error");
+    return;
+  }
+  devrunReset(id, title);
+  devrunLoadEmail();
+  show($("devrun-overlay"), true);
+  await loadDevrunDevices();
+}
+
+/** Toggle the drawer between idle (Start, controls enabled) and running (Stop). */
+function devrunSetRunning(running: boolean): void {
+  devrunRunning = running;
+  show($("devrun-start"), !running);
+  show($("devrun-stop"), running);
+  ($("devrun-device") as HTMLSelectElement).disabled = running;
+  ($("devrun-itest-app") as HTMLSelectElement).disabled = running;
+  ($("devrun-email") as HTMLInputElement).disabled = running;
+}
+
+/** Start the run for the case currently in the drawer, on the chosen device. */
+async function devrunStart(): Promise<void> {
+  if (devrunActiveId === null || devrunRunning) return;
+  const id = devrunActiveId;
+  const serial = ($("devrun-device") as HTMLSelectElement).value;
+  if (!serial) {
+    toast("Pilih device dulu (atau nyalakan emulator).", "error");
+    return;
+  }
+  devrunSetRunning(true);
+  $("devrun-phases").innerHTML = "";
+  $("devrun-edits").innerHTML = "";
+  const v = $("devrun-verdict");
+  v.className = "devrun-verdict hidden";
+  v.textContent = "";
+  const appKey = ($("devrun-itest-app") as HTMLSelectElement).value;
+  const email = ($("devrun-email") as HTMLInputElement).value.trim();
+  localStorage.setItem(`qa_email_${appKey}`, email); // remember per app
+  try {
+    // Flutter widget-test track: triage by case title → run the real widget test
+    // (deterministic `flutter test`, no device). Command name kept for compat.
+    await invoke("run_integration_test", { id, serial, appKey, email });
+  } catch (e) {
+    devrunVerdict("not_auto", errStr(e));
+  } finally {
+    devrunSetRunning(false);
+    if (detailKey) await loadTestCases(detailKey);
+  }
+}
+
+/** Stop the in-flight run (kills the bridge subprocess); the run promise then
+ *  resolves and re-enables the controls. */
+async function devrunStop(): Promise<void> {
+  if (devrunActiveId === null || !devrunRunning) return;
+  try {
+    await invoke("stop_device_run", { id: devrunActiveId });
+    toast("Menghentikan run…");
+  } catch (e) {
+    toast(`Gagal stop: ${errStr(e)}`, "error");
+  }
+}
+
+/** Wire the drawer controls + the streamed `device_run` events (once at startup). */
+function wireDeviceRun(): void {
+  $("devrun-close")?.addEventListener("click", () => {
+    if (devrunRunning) {
+      toast("Run masih jalan — tunggu selesai.", "error");
+      return;
+    }
+    show($("devrun-overlay"), false);
+  });
+  $("devrun-refresh")?.addEventListener("click", () => void loadDevrunDevices());
+  $("devrun-itest-app")?.addEventListener("change", devrunLoadEmail);
+  $("devrun-itest-app")?.addEventListener("change", () => void refreshQaBranchBadge());
+  $("devrun-app")?.addEventListener("change", () => void loadFirebaseBuilds());
+  $("devrun-build-refresh")?.addEventListener("click", () => void loadFirebaseBuilds());
+  $("devrun-start")?.addEventListener("click", () => void devrunStart());
+  $("devrun-stop")?.addEventListener("click", () => void devrunStop());
+  void listen<DevRunMsg>("device_run", (ev) => {
+    const p = ev.payload;
+    if (devrunActiveId !== null && p.id !== devrunActiveId) return;
+    if (p.t === "frame" && p.png) {
+      ($("devrun-frame") as HTMLImageElement).src = p.png;
+      show($("devrun-frame-empty"), false);
+    } else if (p.t === "phase") {
+      devrunPhase(p.key ?? "", p.label ?? "", p.state ?? "");
+    } else if (p.t === "progress") {
+      devrunProgress(p.key ?? "", p.pct ?? null, p.downloaded ?? 0, p.total ?? 0);
+    } else if (p.t === "edit") {
+      devrunEdit(p);
+    } else if (p.t === "verdict") {
+      devrunVerdict(p.verdict ?? "not_auto", p.reason ?? "");
+    }
+  });
+
+  // Ticket triage stream: one row per case as it resolves.
+  void listen<TriageMsg>("triage", (ev) => {
+    const p = ev.payload;
+    if (p.t === "start") {
+      triageCases = [];
+      ($("triage-progress") as HTMLElement).textContent = `0 / ${p.total ?? 0}`;
+      renderTriage();
+    } else if (p.t === "pr_context") {
+      // Retrieval upgrade: classification is grounded in the ticket's real PR diff.
+      const t = $("triage-title") as HTMLElement;
+      t.textContent = `${t.textContent?.split(" · ")[0] ?? t.textContent} · 📎 diff PR (${p.files ?? 0} file)`;
+    } else if (p.t === "running") {
+      ($("triage-progress") as HTMLElement).textContent =
+        `${p.done ?? 0} / ${p.total ?? 0} — lagi cek: ${p.title ?? ""}`;
+    } else if (p.t === "case" && p.case) {
+      triageCases.push(p.case);
+      ($("triage-progress") as HTMLElement).textContent = `${p.done ?? 0} / ${p.total ?? 0}`;
+      renderTriage();
+    } else if (p.t === "done") {
+      ($("triage-progress") as HTMLElement).textContent = `selesai — ${p.total ?? 0} test case`;
+      renderTriage();
+    }
+  });
+
+  // Auto-gen ("✨ Bikin test") progress stream — live coding panel.
+  void listen<GenMsg>("gen_run", (ev) => {
+    const p = ev.payload;
+    if (p.id === undefined) return;
+    const host = genLive(p.id);
+    const setStatus = (s: string) => {
+      const el = host?.querySelector<HTMLElement>(".gen-status");
+      if (el) el.textContent = s;
+    };
+    if (p.t === "phase") {
+      setStatus(`⚙️ ${p.label}…`);
+    } else if (p.t === "attempt") {
+      setStatus(`🔁 percobaan ${p.n}/${p.total} — nulis test…`);
+      const errEl = host?.querySelector<HTMLElement>(".gen-error");
+      if (errEl) errEl.textContent = ""; // clear previous attempt's error
+    } else if (p.t === "step") {
+      setStatus(p.msg ?? "");
+    } else if (p.t === "code") {
+      const code = host?.querySelector<HTMLElement>(".gen-code");
+      if (code) {
+        code.textContent = p.dart ?? "";
+        code.scrollTop = code.scrollHeight; // follow the "typing"
+      }
+    } else if (p.t === "error") {
+      const errEl = host?.querySelector<HTMLElement>(".gen-error");
+      if (errEl) errEl.textContent = `compile/test error:\n${p.error ?? ""}`;
+    } else if (p.t === "done") {
+      const c = triageCases.find((x) => x.id === p.id);
+      if (c && p.verdict === "pass") {
+        c.bucket = "auto";
+        c.verdict = "pass";
+        c.reason = "Test auto-generated (AI 2.5 Pro), lulus & tersimpan.";
+        renderTriage();
+        toast("Test berhasil dibikin & lulus ✅");
+        if (detailKey) void loadTestCases(detailKey);
+      } else {
+        // Generator couldn't build it honestly → reclassify as Manual with the reason.
+        const c = triageCases.find((x) => x.id === p.id);
+        if (c) {
+          c.bucket = "manual";
+          c.reason = p.reason ?? "Auto-gen gagal — perlu tes manual.";
+          renderTriage();
+          toast("Nggak bisa auto-build — ditandai Manual (jujur, bukan ijo palsu).");
+        } else {
+          setStatus(`❌ ${p.reason ?? "gagal — perlu manual"}`);
+        }
+      }
+    }
+  });
+
+  // Bulk generation tally (the "⚙️ Generate semua buildable" run).
+  void listen<GenBulkMsg>("gen_bulk", (ev) => {
+    const p = ev.payload;
+    const prog = $("gen-bulk-progress");
+    if (p.t === "start") {
+      show(prog, true);
+      prog.textContent = `Generate ${p.total ?? 0} case buildable… 0 selesai`;
+    } else if (p.t === "case") {
+      prog.textContent = `(${(p.done ?? 0) + 1}/${p.total ?? 0}) lagi generate: ${p.title ?? ""}`;
+    } else if (p.t === "case_done") {
+      prog.textContent = `${p.done ?? 0}/${p.total ?? 0} selesai — ✅ ${p.passed ?? 0} lulus · 🖐 ${p.manual ?? 0} manual`;
+      // Reflect the per-case result in the triage list immediately.
+      const c = triageCases.find((x) => x.id === p.id);
+      if (c) {
+        if (p.verdict === "pass") { c.bucket = "auto"; c.verdict = "pass"; c.reason = "Auto-gen lulus & tersimpan."; }
+        else { c.bucket = "manual"; }
+        renderTriage();
+      }
+    } else if (p.t === "done") {
+      prog.textContent = `Selesai — dari ${p.total ?? 0} buildable: ✅ ${p.passed ?? 0} lulus, 🖐 ${p.manual ?? 0} manual/draft.`;
+      toast(`Bulk generate kelar: ${p.passed ?? 0} lulus, ${p.manual ?? 0} manual.`);
+      if (detailKey) void loadTestCases(detailKey);
+    }
+  });
+}
+
+// --- Ticket triage --------------------------------------------------------
+interface TriageCase {
+  id: number;
+  title: string;
+  bucket: string; // auto | spec_drift | buildable | manual | unknown | config
+  verdict: string; // pass | fail | not_auto
+  reason: string;
+}
+interface TriageMsg {
+  t: "start" | "running" | "case" | "done" | "pr_context";
+  total?: number;
+  done?: number;
+  id?: number;
+  title?: string;
+  case?: TriageCase;
+  files?: number;
+}
+
+interface GenBulkMsg {
+  t: "start" | "case" | "case_done" | "done";
+  ticket?: string;
+  id?: number;
+  title?: string;
+  verdict?: string;
+  done?: number;
+  total?: number;
+  passed?: number;
+  manual?: number;
+}
+
+interface GenMsg {
+  t: "phase" | "attempt" | "step" | "code" | "error" | "verdict" | "done";
+  id?: number;
+  label?: string;
+  state?: string;
+  n?: number;
+  total?: number;
+  msg?: string;
+  dart?: string;
+  error?: string;
+  attempt?: number;
+  verdict?: string;
+  reason?: string;
+}
+
+/** Ensure the live-coding panel exists inside a buildable row's progress slot. */
+function genLive(id: number): HTMLElement | null {
+  const host = document.querySelector<HTMLElement>(`[data-gen="${id}"]`);
+  if (!host) return null;
+  // Auto-expand the row's detail so live progress/code is visible.
+  document.getElementById(`trd-${id}`)?.classList.remove("hidden");
+  if (!host.querySelector(".gen-code")) {
+    host.innerHTML =
+      `<div class="gen-status"></div>` +
+      `<pre class="gen-code"></pre>` +
+      `<div class="gen-error"></div>`;
+  }
+  return host;
+}
+
+let triageCases: TriageCase[] = [];
+
+// Map a case to a display group: auto-pass, real bug, spec-drift, buildable, manual.
+const TRIAGE_GROUPS: { key: string; label: string; cls: string; match: (c: TriageCase) => boolean }[] = [
+  { key: "pass", label: "✅ Auto-pass", cls: "g-pass", match: (c) => c.bucket === "auto" && c.verdict === "pass" },
+  { key: "fail", label: "❌ FAIL (bug!)", cls: "g-fail", match: (c) => c.bucket === "auto" && c.verdict === "fail" },
+  { key: "auto", label: "▶ Bisa di-run", cls: "g-auto", match: (c) => c.bucket === "auto" },
+  { key: "spec_drift", label: "🚩 Spec ≠ build", cls: "g-drift", match: (c) => c.bucket === "spec_drift" },
+  { key: "buildable", label: "🔧 Buildable", cls: "g-build", match: (c) => c.bucket === "buildable" },
+  { key: "manual", label: "✋ Manual", cls: "g-manual", match: (c) => c.bucket === "manual" },
+  { key: "unknown", label: "❔ Belum di-triage", cls: "g-unknown", match: () => true },
+];
+
+function groupOf(c: TriageCase): { key: string; label: string; cls: string } {
+  return TRIAGE_GROUPS.find((g) => g.match(c))!;
+}
+
+// Sort order for the table: actionable items (bugs, buildable) first, the
+// already-green auto-pass cases last — you scan what needs work, not what's done.
+const GROUP_PRIO: Record<string, number> = {
+  fail: 0, buildable: 1, spec_drift: 2, manual: 3, auto: 4, pass: 5, unknown: 6,
+};
+
+function renderTriage(): void {
+  const buckets = $("triage-buckets");
+  const detail = $("triage-detail");
+  buckets.innerHTML = "";
+  // Summary chips (counts per group, declaration order wins on overlap).
+  const counts = new Map<string, number>();
+  for (const c of triageCases) {
+    const g = groupOf(c);
+    counts.set(g.key, (counts.get(g.key) ?? 0) + 1);
+  }
+  for (const g of TRIAGE_GROUPS) {
+    const n = counts.get(g.key) ?? 0;
+    if (n === 0) continue;
+    const chip = document.createElement("span");
+    chip.className = `triage-chip ${g.cls}`;
+    chip.textContent = `${g.label}: ${n}`;
+    buckets.appendChild(chip);
+  }
+  // Bulk "Generate semua buildable" button only when there's >1 to do.
+  const buildableN = counts.get("buildable") ?? 0;
+  const genAll = $<HTMLButtonElement>("tc-gen-all");
+  show(genAll, buildableN > 1);
+  if (buildableN > 1) genAll.textContent = `⚙️ Generate semua buildable (${buildableN})`;
+
+  // Table: one row per case, sorted actionable-first. Code/error live in a
+  // collapsible detail (expanded on click, and auto-expanded while generating)
+  // so the table stays a scannable map instead of a wall of streaming code.
+  const rows = [...triageCases].sort(
+    (a, b) => (GROUP_PRIO[groupOf(a).key] ?? 9) - (GROUP_PRIO[groupOf(b).key] ?? 9),
+  );
+  detail.innerHTML =
+    `<div class="tr-table">` +
+    rows.map((c) => {
+      const g = groupOf(c);
+      const icon = g.label.split(" ")[0];               // leading emoji glyph
+      const tag = g.label.replace(/^\S+\s*/, "");        // text after the glyph
+      const act = c.bucket === "buildable"
+        ? `<button class="btn small primary gen-btn" data-id="${c.id}">✨ Bikin</button>`
+        : `<button class="tr-toggle" data-id="${c.id}" title="Lihat detail">▸</button>`;
+      return (
+        `<div class="tr-row" data-id="${c.id}">` +
+          `<span class="tr-status ${g.cls}" title="${esc(tag)}">${icon}</span>` +
+          `<span class="tr-main">` +
+            `<span class="tr-title">${esc(c.title)}</span>` +
+            (c.reason ? `<span class="tr-reason">${esc(c.reason)}</span>` : "") +
+          `</span>` +
+          `<span class="tr-bucket ${g.cls}">${esc(tag)}</span>` +
+          `<span class="tr-act">${act}</span>` +
+        `</div>` +
+        `<div class="tr-detail hidden" id="trd-${c.id}">` +
+          (c.reason ? `<div class="tr-reason-full">${esc(c.reason)}</div>` : "") +
+          `<div class="gen-progress" data-gen="${c.id}"></div>` +
+        `</div>`
+      );
+    }).join("") +
+    `</div>`;
+
+  const toggle = (id: string | undefined) => {
+    if (!id) return;
+    document.getElementById(`trd-${id}`)?.classList.toggle("hidden");
+  };
+  detail.querySelectorAll<HTMLButtonElement>(".gen-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void generateCaseTest(Number(btn.dataset.id), btn);
+    });
+  });
+  detail.querySelectorAll<HTMLButtonElement>(".tr-toggle").forEach((b) => {
+    b.addEventListener("click", (e) => { e.stopPropagation(); toggle(b.dataset.id); });
+  });
+  detail.querySelectorAll<HTMLElement>(".tr-row").forEach((row) => {
+    row.addEventListener("click", () => toggle(row.dataset.id));
+  });
+}
+
+/** "✨ Bikin test": auto-generate a Flutter test for a buildable case (Gemini 2.5
+ *  Pro + compile/repair loop). Progress streams via the "gen_run" event. */
+async function generateCaseTest(id: number, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  btn.textContent = "✨ Generating…";
+  document.getElementById(`trd-${id}`)?.classList.remove("hidden"); // show live detail
+  const prog = document.querySelector<HTMLElement>(`[data-gen="${id}"]`);
+  if (prog) prog.textContent = "mulai…";
+  try {
+    await invoke("generate_case_test", { id });
+  } catch (err) {
+    if (prog) prog.textContent = `gagal: ${errStr(err)}`;
+    btn.disabled = false;
+    btn.textContent = "✨ Bikin test";
+  }
+}
+
+/** "⚙️ Generate semua buildable": bulk-generate tests for every buildable case
+ *  in the open ticket. Per-case live updates reuse the gen_run stream; overall
+ *  tally comes via gen_bulk. */
+async function generateAllBuildable(): Promise<void> {
+  if (!detailKey) return;
+  const n = triageCases.filter((c) => c.bucket === "buildable").length;
+  if (n === 0) return;
+  const btn = $<HTMLButtonElement>("tc-gen-all");
+  btn.disabled = true;
+  const prog = $("gen-bulk-progress");
+  show(prog, true);
+  prog.textContent = `Mulai generate ${n} case buildable… (paralel 3 sekaligus)`;
+  try {
+    await invoke("generate_ticket_tests", { ticket: detailKey, max: null });
+  } catch (err) {
+    toast(`Bulk generate gagal: ${errStr(err)}`, "error");
+  } finally {
+    btn.disabled = false;
+    if (detailKey) await loadTestCases(detailKey);
+  }
+}
+
+/** "▶ Run semua test": re-run every generated widget test in ONE batched
+ * flutter invocation (~3× faster than per-file) — a fast regression check. */
+async function runAllGenerated(): Promise<void> {
+  const btn = $<HTMLButtonElement>("tc-run-all");
+  const out = $("run-all-result");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "▶ Lagi run…";
+  show(out, true);
+  out.textContent = "Build + run semua test ter-generate (satu invocation)…";
+  const t0 = performance.now();
+  try {
+    const r = await invoke<{ total: number; passed: number; failed: number; all_pass: boolean; tail?: string; reason?: string }>(
+      "run_generated_tests",
+      { appKey: currentAppKey() },
+    );
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (r.reason) {
+      out.textContent = r.reason;
+    } else {
+      const ok = r.all_pass || r.failed === 0;
+      out.className = `run-all-result ${ok ? "ok" : "fail"}`;
+      out.textContent = `${ok ? "✓" : "✗"} ${r.passed} lulus · ${r.failed} gagal · ${r.total} total — ${secs}s`;
+    }
+  } catch (err) {
+    out.className = "run-all-result fail";
+    out.textContent = `Gagal: ${errStr(err)}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+}
+
+/** "🔎 Triage tiket": classify + run every case in the open ticket, show the breakdown. */
+async function triageTicket(): Promise<void> {
+  if (!detailKey) return;
+  const key = detailKey;
+  const btn = $<HTMLButtonElement>("tc-triage");
+  show($("triage-panel"), true);
+  ($("triage-title") as HTMLElement).textContent = `Triage ${key}`;
+  triageCases = [];
+  renderTriage();
+  btn.disabled = true;
+  btn.textContent = "🔎 Triage jalan…";
+  // Auto cases run for real (pass/fail) via widget tests; device selection is
+  // vestigial (the retired on-device track) and not needed for widget tests.
+  const serial = ($("devrun-device") as HTMLSelectElement | null)?.value || undefined;
+  const appKey = ($("devrun-itest-app") as HTMLSelectElement | null)?.value || undefined;
+  const email = ($("devrun-email") as HTMLInputElement | null)?.value.trim() || undefined;
+  try {
+    await invoke<TriageCase[]>("triage_ticket", { ticket: key, serial, appKey, email, fast: false });
+    if (detailKey === key) await loadTestCases(key); // refresh row pills
+  } catch (err) {
+    toast(`Triage gagal: ${errStr(err)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔎 Triage tiket";
+  }
+}
+
+interface QaBranchStatus {
+  repo: string;
+  branch: string;
+  behind: number;
+  ahead: number;
+  dirty: boolean;
+  error: string;
+}
+
+/** Which app's repo the test-case actions target. The ticket's own [GTI]/[GTG]
+ *  tag wins (a GTG ticket must hit the GTG repo regardless of the device-run
+ *  selector); fall back to the selector, then GTI. */
+function currentAppKey(): string {
+  if (detailKey) {
+    const m = ticketByKey(detailKey)?.summary.match(/\[(GTI|GTG)\]/i);
+    if (m) return m[1].toUpperCase();
+  }
+  return ($("devrun-itest-app") as HTMLSelectElement | null)?.value || "GTI";
+}
+
+/** Refresh the QA-branch badge: shows current branch + how far behind develop. */
+async function refreshQaBranchBadge(): Promise<void> {
+  const badge = $("qa-branch-badge");
+  try {
+    const st = await invoke<QaBranchStatus>("qa_branch_status", { appKey: currentAppKey() });
+    if (st.error) {
+      badge.className = "qa-branch-badge warn";
+      badge.textContent = `⚠ ${st.error}`;
+    } else if (st.behind > 0) {
+      badge.className = "qa-branch-badge warn";
+      badge.textContent = `⤓ ${st.branch}: ${st.behind} commit di belakang develop${st.dirty ? " · tree kotor" : ""}`;
+    } else {
+      badge.className = "qa-branch-badge ok";
+      badge.textContent = `✓ ${st.branch}: sinkron sama develop`;
+    }
+    show(badge, true);
+  } catch {
+    show(badge, false);
+  }
+}
+
+/** "⤓ Sync dari develop": one-way merge of origin/develop into the QA branch. */
+async function syncDevelop(): Promise<void> {
+  const btn = $<HTMLButtonElement>("tc-sync-develop");
+  btn.disabled = true;
+  btn.textContent = "⤓ Sync jalan…";
+  try {
+    const msg = await invoke<string>("sync_qa_branch", { appKey: currentAppKey() });
+    toast(msg);
+  } catch (err) {
+    toast(`Sync gagal: ${errStr(err)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "⤓ Sync dari develop";
+    void refreshQaBranchBadge();
+  }
 }
 
 /** Submit the manual add form for the open ticket. */
@@ -1473,6 +2187,24 @@ function closeSettings(): void {
   show($("settings-overlay"), false);
 }
 
+/** Native folder picker for a local Flutter repo path field. */
+async function pickRepoPath(inputId: string, title: string): Promise<void> {
+  try {
+    const input = $(inputId) as HTMLInputElement;
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title,
+      defaultPath: input.value.trim() || undefined,
+    });
+    if (typeof picked === "string") {
+      input.value = picked;
+    }
+  } catch (e) {
+    toast(`Gagal buka folder picker: ${errStr(e)}`, "error");
+  }
+}
+
 /** Read the settings form into an AppConfig (works for <input> and <select>). */
 function readConfigFromForm(): AppConfig {
   const cfg = {} as AppConfig;
@@ -1874,6 +2606,12 @@ function wireEvents(): void {
   $("theme-btn").addEventListener("click", toggleTheme);
 
   $("gear-btn").addEventListener("click", () => void openSettings());
+  $("cfg-gti_path-pick").addEventListener("click", () =>
+    void pickRepoPath("cfg-gti_path", "Pilih folder repo GTI (gotradeindoapp)")
+  );
+  $("cfg-gtg_path-pick").addEventListener("click", () =>
+    void pickRepoPath("cfg-gtg_path", "Pilih folder repo GTG (tradecharlieflutter)")
+  );
   $("update-check").addEventListener("click", () => void checkForUpdate(true));
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-cancel").addEventListener("click", closeSettings);
@@ -1950,6 +2688,10 @@ function wireEvents(): void {
     if ((e as KeyboardEvent).key === "Enter") void summarizeFromLink();
   });
   $("tc-generate").addEventListener("click", () => void generateTestCases());
+  $("tc-triage").addEventListener("click", () => void triageTicket());
+  $("tc-gen-all").addEventListener("click", () => void generateAllBuildable());
+  $("tc-run-all").addEventListener("click", () => void runAllGenerated());
+  $("tc-sync-develop").addEventListener("click", () => void syncDevelop());
   $("tc-post-jira").addEventListener("click", () => void postTestResults());
   $("tc-add-toggle").addEventListener("click", () => {
     const form = $("tc-add-form");
@@ -1965,6 +2707,7 @@ function wireEvents(): void {
 
   wireBugWriter();
   wireAnnotator();
+  wireDeviceRun();
   wirePalette(paletteCommands);
   $("palette-btn").addEventListener("click", openPalette);
   wireSummary();

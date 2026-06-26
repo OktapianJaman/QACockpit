@@ -17,6 +17,8 @@ export const CONFIG_KEYS: ConfigKey[] = [
   "github_token",
   "gemini_api_key",
   "ai_language",
+  "gti_path",
+  "gtg_path",
 ];
 
 /** Fixed list of repos used by the per-ticket PR dropdown (not user-editable). */

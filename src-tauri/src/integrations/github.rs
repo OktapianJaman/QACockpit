@@ -243,9 +243,229 @@ pub fn fetch_pr_detail(token: &str, repo: &str, number: i64) -> Result<(String, 
     parse_pr_detail(&body)
 }
 
+/// Map a ticket-summary repo tag ([GTI]/[GTG]) to its `OWNER/REPO`. Mirrors the
+/// frontend's REPO_TAGS (constants.ts) — keep the two in sync.
+fn repo_for_tag(tag: &str) -> Option<&'static str> {
+    match tag.to_uppercase().as_str() {
+        "GTI" => Some("tr8team/gotradeindoapp"),
+        "GTG" => Some("tr8team/tradecharlieflutter"),
+        _ => None,
+    }
+}
+
+/// Resolve the PR(s) a Jira ticket refers to from its summary, using the team
+/// convention: a repo tag (`[GTI]`/`[GTG]`) + `#NNNN` PR number(s), e.g.
+/// "[UAT] [GTG] feat(srf): … #3250". Mirrors the frontend `pr-ref.ts`. Returns
+/// (OWNER/REPO, number) pairs, deduped. Empty when the summary follows no
+/// convention. Pure string parsing — unit-tested.
+pub fn parse_pr_refs_from_summary(summary: &str) -> Vec<(String, i64)> {
+    if summary.is_empty() {
+        return vec![];
+    }
+    // First bracketed alphabetic tag that maps to a known repo (skips [UAT]).
+    let mut repo: Option<&'static str> = None;
+    let b = summary.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'[' {
+            if let Some(end) = summary[i + 1..].find(']') {
+                let inner = &summary[i + 1..i + 1 + end];
+                if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_alphabetic()) {
+                    if let Some(r) = repo_for_tag(inner) {
+                        repo = Some(r);
+                        break;
+                    }
+                }
+                i = i + 1 + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let Some(repo) = repo else { return vec![] };
+
+    // All #NNNN, attributed to that repo, deduped (preserve order).
+    let mut out: Vec<(String, i64)> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' {
+            let start = i + 1;
+            let mut j = start;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                if let Ok(n) = summary[start..j].parse::<i64>() {
+                    if n > 0 && !out.iter().any(|(_, x)| *x == n) {
+                        out.push((repo.to_string(), n));
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// One changed file extracted from a unified PR diff.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffFile {
+    /// New-side path (relative to repo root, e.g. "lib/kyc/foo.dart").
+    pub path: String,
+    /// Lines added by the PR (without the leading `+`). Hunk headers and
+    /// removed/context lines are dropped — this is the *new behavior*.
+    pub added: Vec<String>,
+}
+
+/// Parse a raw unified diff (GitHub `Accept: application/vnd.github.diff`)
+/// into per-file added-line sets. Deleted files (`+++ /dev/null`) are skipped
+/// since they have no new path. Pure string parsing — unit-tested.
+pub fn parse_diff_files(diff: &str) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut cur: Option<DiffFile> = None;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(f) = cur.take() {
+                files.push(f);
+            }
+        } else if let Some(p) = line.strip_prefix("+++ b/") {
+            cur = Some(DiffFile { path: p.trim().to_string(), added: Vec::new() });
+        } else if line.starts_with("--- ") || line.starts_with("+++ ") {
+            // file headers (incl. "+++ /dev/null") — not content
+        } else if let Some(rest) = line.strip_prefix('+') {
+            if let Some(f) = cur.as_mut() {
+                f.added.push(rest.to_string());
+            }
+        }
+    }
+    if let Some(f) = cur.take() {
+        files.push(f);
+    }
+    files
+}
+
+/// Build a compact, AI-friendly digest of a PR diff: only `.dart` files, with
+/// each file's added lines capped. `(changed_dart_paths, digest_text)`.
+/// `max_lines_per_file` / `max_total_chars` bound the size so it fits a prompt.
+pub fn diff_digest(
+    diff: &str,
+    max_lines_per_file: usize,
+    max_total_chars: usize,
+) -> (Vec<String>, String) {
+    let mut paths = Vec::new();
+    let mut digest = String::new();
+    for f in parse_diff_files(diff) {
+        if !f.path.ends_with(".dart") {
+            continue;
+        }
+        paths.push(f.path.clone());
+        digest.push_str(&format!("=== {} (+{} baris) ===\n", f.path, f.added.len()));
+        for l in f.added.iter().take(max_lines_per_file) {
+            let l = if l.len() > 200 { &l[..200] } else { l.as_str() };
+            digest.push_str(&format!("+ {}\n", l.trim_end()));
+        }
+        if f.added.len() > max_lines_per_file {
+            digest.push_str(&format!("  … (+{} baris lagi)\n", f.added.len() - max_lines_per_file));
+        }
+        digest.push('\n');
+        if digest.len() > max_total_chars {
+            digest.truncate(max_total_chars);
+            digest.push_str("\n… (diff dipotong)\n");
+            break;
+        }
+    }
+    (paths, digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_pr_refs_from_summary_uses_tag_and_hash() {
+        assert_eq!(
+            parse_pr_refs_from_summary("[UAT] [GTG] feat(srf): withdrawal msg #3250"),
+            vec![("tr8team/tradecharlieflutter".to_string(), 3250)],
+        );
+        assert_eq!(
+            parse_pr_refs_from_summary("[GTI] fix login #42"),
+            vec![("tr8team/gotradeindoapp".to_string(), 42)],
+        );
+        // multiple numbers, deduped, all attributed to the one repo tag
+        assert_eq!(
+            parse_pr_refs_from_summary("[GTG] big #10 and #12 (re #10)"),
+            vec![
+                ("tr8team/tradecharlieflutter".to_string(), 10),
+                ("tr8team/tradecharlieflutter".to_string(), 12),
+            ],
+        );
+        // no repo tag, or no number → empty
+        assert!(parse_pr_refs_from_summary("feat: something #3182").is_empty());
+        assert!(parse_pr_refs_from_summary("[GTG] feat: something").is_empty());
+        assert!(parse_pr_refs_from_summary("").is_empty());
+    }
+
+    #[test]
+    fn parse_diff_files_extracts_new_paths_and_added_lines() {
+        let diff = "\
+diff --git a/lib/kyc/foo.dart b/lib/kyc/foo.dart
+index 111..222 100644
+--- a/lib/kyc/foo.dart
++++ b/lib/kyc/foo.dart
+@@ -1,3 +1,4 @@
+ unchanged line
+-removed line
++added one
++added two
+diff --git a/test/old.dart b/test/old.dart
+deleted file mode 100644
+index 333..000
+--- a/test/old.dart
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+diff --git a/lib/new.dart b/lib/new.dart
+new file mode 100644
+index 000..444
+--- /dev/null
++++ b/lib/new.dart
+@@ -0,0 +1,1 @@
++brand new
+";
+        let files = parse_diff_files(diff);
+        assert_eq!(files.len(), 2, "deleted file (+++ /dev/null) skipped");
+        assert_eq!(files[0].path, "lib/kyc/foo.dart");
+        assert_eq!(files[0].added, vec!["added one", "added two"]);
+        assert_eq!(files[1].path, "lib/new.dart");
+        assert_eq!(files[1].added, vec!["brand new"]);
+    }
+
+    #[test]
+    fn diff_digest_keeps_only_dart_and_caps_lines() {
+        let diff = "\
+diff --git a/lib/a.dart b/lib/a.dart
+--- a/lib/a.dart
++++ b/lib/a.dart
+@@
++l1
++l2
++l3
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
++docs change
+";
+        let (paths, digest) = diff_digest(diff, 2, 10_000);
+        assert_eq!(paths, vec!["lib/a.dart"], "non-dart files excluded");
+        assert!(digest.contains("lib/a.dart"));
+        assert!(digest.contains("+ l1") && digest.contains("+ l2"));
+        assert!(!digest.contains("+ l3"), "capped at max_lines_per_file");
+        assert!(digest.contains("baris lagi"));
+        assert!(!digest.contains("docs change"));
+    }
 
     #[test]
     fn parse_pr_url_extracts_repo_and_number() {

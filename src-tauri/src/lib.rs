@@ -52,6 +52,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -85,6 +86,17 @@ pub fn run() {
             commands::set_test_case_notes,
             commands::update_test_case,
             commands::delete_test_case,
+            commands::run_test_case_on_device,
+            commands::run_integration_test,
+            commands::triage_ticket,
+            commands::generate_case_test,
+            commands::generate_ticket_tests,
+            commands::run_generated_tests,
+            commands::qa_branch_status,
+            commands::sync_qa_branch,
+            commands::stop_device_run,
+            commands::list_adb_devices,
+            commands::list_firebase_builds,
             commands::generate_test_cases,
             commands::generate_test_cases_from_pr,
             commands::generate_test_cases_from_prs,

@@ -15,6 +15,14 @@ pub struct TestCase {
     pub expected: String,
     pub status: String,
     pub notes: String,
+    /// Why the last device run gave its verdict (esp. NOT-AUTO / fail). Empty when
+    /// never run or passed.
+    #[serde(default)]
+    pub verdict_reason: String,
+    /// Cached triage classification (auto|spec_drift|buildable|manual|unknown).
+    /// Empty until the ticket has been triaged.
+    #[serde(default)]
+    pub triage_bucket: String,
 }
 
 /// Open (or create) the SQLite database at `path` and apply the schema.
@@ -26,6 +34,11 @@ pub fn open(path: &str) -> Result<Connection> {
     // CREATE TABLE IF NOT EXISTS, so an existing `test_cases` table won't gain
     // the column. ALTER ... ADD COLUMN errors if it already exists; swallow it.
     let _ = conn.execute("ALTER TABLE test_cases ADD COLUMN notes TEXT", []);
+    // Migration: reason for the last device-run verdict (NOT-AUTO / fail detail).
+    let _ = conn.execute("ALTER TABLE test_cases ADD COLUMN verdict_reason TEXT", []);
+    // Migration: cached triage bucket (auto|spec_drift|buildable|manual|unknown)
+    // so re-triaging a ticket doesn't re-call the AI classifier every time.
+    let _ = conn.execute("ALTER TABLE test_cases ADD COLUMN triage_bucket TEXT", []);
     Ok(conn)
 }
 
@@ -299,29 +312,65 @@ pub fn add_test_case(
     Ok(conn.last_insert_rowid())
 }
 
+/// Map a row of (id, ticket_key, title, steps, expected, status, notes, verdict_reason)
+/// to a TestCase. Shared by list + single-row getters.
+fn row_to_test_case(row: &rusqlite::Row) -> rusqlite::Result<TestCase> {
+    Ok(TestCase {
+        id: row.get(0)?,
+        ticket_key: row.get(1)?,
+        title: row.get(2)?,
+        steps: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        expected: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        status: row.get(5)?,
+        notes: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        verdict_reason: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+        triage_bucket: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+    })
+}
+
+const TC_COLS: &str =
+    "id, ticket_key, title, steps, expected, status, notes, verdict_reason, triage_bucket";
+
 /// List all test cases for a ticket, ordered by id.
 pub fn list_test_cases(conn: &Connection, ticket_key: &str) -> Result<Vec<TestCase>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, ticket_key, title, steps, expected, status, notes FROM test_cases
-         WHERE ticket_key = ?1
-         ORDER BY id",
-    )?;
-    let rows = stmt.query_map([ticket_key], |row| {
-        Ok(TestCase {
-            id: row.get(0)?,
-            ticket_key: row.get(1)?,
-            title: row.get(2)?,
-            steps: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            expected: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            status: row.get(5)?,
-            notes: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TC_COLS} FROM test_cases WHERE ticket_key = ?1 ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([ticket_key], row_to_test_case)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
     }
     Ok(out)
+}
+
+/// Fetch a single test case by id.
+pub fn get_test_case(conn: &Connection, id: i64) -> Result<TestCase> {
+    Ok(conn.query_row(
+        &format!("SELECT {TC_COLS} FROM test_cases WHERE id = ?1"),
+        [id],
+        row_to_test_case,
+    )?)
+}
+
+/// Record a device-run verdict: status ('passed'|'failed'|'not_auto'|'running') plus
+/// the human reason (cleared on pass).
+pub fn set_test_case_verdict(conn: &Connection, id: i64, status: &str, reason: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE test_cases SET status = ?1, verdict_reason = ?2 WHERE id = ?3",
+        rusqlite::params![status, reason, id],
+    )?;
+    Ok(())
+}
+
+/// Cache a triage classification bucket for a case (so re-triage is instant and
+/// the AI classifier isn't re-called). Also persists the reason in verdict_reason.
+pub fn set_triage(conn: &Connection, id: i64, bucket: &str, reason: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE test_cases SET triage_bucket = ?1, verdict_reason = ?2 WHERE id = ?3",
+        rusqlite::params![bucket, reason, id],
+    )?;
+    Ok(())
 }
 
 /// Update a single test case's run status (e.g. 'untested' | 'passed' | 'failed').
