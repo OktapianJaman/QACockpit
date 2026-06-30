@@ -14,6 +14,7 @@ export const CONFIG_KEYS: ConfigKey[] = [
   "jira_project",
   "jira_assignee",
   "jira_sprint_scope",
+  "jira_sprint",
   "github_token",
   "gemini_api_key",
   "ai_language",

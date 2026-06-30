@@ -62,6 +62,13 @@ export interface JiraTransition {
   to_status: string;
 }
 
+export interface JiraSprint {
+  id: number;
+  name: string;
+  /** "active" | "future" | "closed". */
+  state: string;
+}
+
 export interface AppConfig {
   jira_base_url: string;
   jira_email: string;
@@ -70,6 +77,8 @@ export interface AppConfig {
   jira_project: string;
   jira_assignee: string;
   jira_sprint_scope: string;
+  /** Numeric sprint id (as string) chosen when jira_sprint_scope === "specific". */
+  jira_sprint: string;
   github_token: string;
   gemini_api_key: string;
   ai_language: string;
@@ -93,6 +102,7 @@ export type ConfigKey =
   | "jira_project"
   | "jira_assignee"
   | "jira_sprint_scope"
+  | "jira_sprint"
   | "github_token"
   | "gemini_api_key"
   | "ai_language"

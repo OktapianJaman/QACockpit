@@ -426,8 +426,13 @@
               <option value="">Semua (sepanjang waktu)</option>
               <option value="active">Sprint aktif sekarang</option>
               <option value="backlog">Backlog (belum masuk sprint)</option>
+              <option value="specific">Sprint tertentu…</option>
             </select>
-            <small class="field-hint">Pilih "Sprint aktif" biar cuma tiket sprint berjalan (mis. Sprint 58) yang muncul.</small>
+            <small class="field-hint">Pilih "Sprint aktif" biar cuma tiket sprint berjalan (mis. Sprint 58) yang muncul, atau "Sprint tertentu…" buat memilih satu sprint dari daftar.</small>
+          </label>
+          <label id="jira-sprint-row" class="hidden">Sprint
+            <select id="cfg-jira_sprint"></select>
+            <small class="field-hint">Daftar sprint aktif &amp; mendatang dari board project terpilih. Butuh Project terisi.</small>
           </label>
           <label>GitHub Token <span class="opt">(opsional)</span>
             <input type="password" id="cfg-github_token" placeholder="••••••••" />

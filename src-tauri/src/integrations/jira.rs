@@ -64,7 +64,13 @@ pub fn parse_issues(json: &str, story_point_field: &str) -> Result<Vec<JiraTicke
 /// specific assignee. Empty `assignee` means the logged-in user; empty
 /// `project` means all projects. Returns the user's matching tickets ordered by
 /// most-recently-updated (no date cutoff, so the whole assigned backlog shows).
-pub fn build_jql(project: &str, assignee: &str, status_category: &str, sprint_scope: &str) -> String {
+pub fn build_jql(
+    project: &str,
+    assignee: &str,
+    status_category: &str,
+    sprint_scope: &str,
+    sprint_id: &str,
+) -> String {
     let assignee_clause = if assignee.trim().is_empty() {
         "assignee = currentUser()".to_string()
     } else {
@@ -84,10 +90,20 @@ pub fn build_jql(project: &str, assignee: &str, status_category: &str, sprint_sc
         ));
     }
     // Optional sprint scope: "active" = current sprint, "backlog" = not in any
-    // sprint. Anything else (incl. empty) = no sprint filter (all-time).
+    // sprint, "specific" = one chosen sprint by numeric id (`sprint_id`).
+    // Anything else (incl. empty) = no sprint filter (all-time).
     match sprint_scope.trim() {
         "active" => jql.push_str(" AND sprint in openSprints()"),
         "backlog" => jql.push_str(" AND sprint is EMPTY"),
+        "specific" => {
+            // The id comes from our own dropdown, but only append it when it is
+            // all digits so the JQL stays injection-safe. Empty/invalid id ->
+            // no sprint filter rather than a malformed query.
+            let id = sprint_id.trim();
+            if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+                jql.push_str(&format!(" AND sprint = {id}"));
+            }
+        }
         _ => {}
     }
     jql.push_str(" ORDER BY updated DESC");
@@ -255,6 +271,111 @@ pub fn fetch_assignees(
         .error_for_status()?
         .text()?;
     parse_assignees(&body)
+}
+
+// ---------------------------------------------------------------------------
+// Jira sprints (Agile API) for the Settings "Sprint tertentu" picker
+// ---------------------------------------------------------------------------
+
+/// A Jira sprint, serialized with snake_case keys (`id`, `name`, `state`) read
+/// by the frontend. `state` is "active" | "future" | "closed".
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct JiraSprint {
+    pub id: i64,
+    pub name: String,
+    pub state: String,
+}
+
+/// Parse the body of `GET /rest/agile/1.0/board?projectKeyOrId=KEY` — a
+/// `{"values":[{"id":123, ...}], ...}` board list — and return the first board's
+/// numeric id. `None` when the project has no board.
+pub fn parse_first_board_id(json: &str) -> Option<i64> {
+    let root: Value = serde_json::from_str(json).ok()?;
+    root.get("values")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|b| b.get("id").and_then(Value::as_i64))
+}
+
+/// Parse the body of `GET /rest/agile/1.0/board/{id}/sprint` —
+/// `{"values":[{"id":9348,"name":"QAT Sprint 58","state":"active"}], ...}`.
+pub fn parse_sprints(json: &str) -> Result<Vec<JiraSprint>> {
+    let root: Value = serde_json::from_str(json)?;
+    let values = root
+        .get("values")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut sprints = Vec::with_capacity(values.len());
+    for s in values {
+        let id = match s.get("id").and_then(Value::as_i64) {
+            Some(id) => id,
+            None => continue, // a sprint without an id is unusable; skip it
+        };
+        let name = s
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let state = s
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        sprints.push(JiraSprint { id, name, state });
+    }
+    Ok(sprints)
+}
+
+/// Fetch the active + future sprints for `project`. Sprints belong to a board,
+/// so we resolve the project's first board, then list its sprints. An empty
+/// `project` (no board to resolve) returns an empty list rather than erroring,
+/// mirroring [`fetch_assignees`]. Thin HTTP wrapper; not unit-tested.
+pub fn fetch_sprints(
+    base_url: &str,
+    email: &str,
+    token: &str,
+    project: &str,
+) -> Result<Vec<JiraSprint>> {
+    let project = project.trim();
+    if project.is_empty() {
+        return Ok(Vec::new());
+    }
+    let base = base_url.trim_end_matches('/');
+    let client = crate::net::client();
+
+    // 1) Resolve the project's first SCRUM board. Only scrum boards have
+    // sprints; the `/board/{id}/sprint` endpoint returns 400 for a kanban
+    // board, so we filter by `type=scrum` here rather than picking any board.
+    let boards_body = crate::net::send_retrying(
+        client
+            .get(format!("{base}/rest/agile/1.0/board"))
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[
+                ("projectKeyOrId", project),
+                ("type", "scrum"),
+                ("maxResults", "50"),
+            ]),
+    )?
+        .error_for_status()?
+        .text()?;
+    let board_id = match parse_first_board_id(&boards_body) {
+        Some(id) => id,
+        None => return Ok(Vec::new()), // no scrum board -> no sprints to pick
+    };
+
+    // 2) List that board's active + future sprints.
+    let sprints_body = crate::net::send_retrying(
+        client
+            .get(format!("{base}/rest/agile/1.0/board/{board_id}/sprint"))
+            .basic_auth(email, Some(token))
+            .header("Accept", "application/json")
+            .query(&[("state", "active,future"), ("maxResults", "50")]),
+    )?
+        .error_for_status()?
+        .text()?;
+    parse_sprints(&sprints_body)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,13 +552,14 @@ pub fn fetch_my_issues(
     assignee: &str,
     status_category: &str,
     sprint_scope: &str,
+    sprint_id: &str,
 ) -> Result<Vec<JiraTicket>> {
     let fields = format!("summary,status,updated,{}", story_point_field);
     // The legacy /rest/api/3/search endpoint was removed by Atlassian (returns
     // 410 Gone since mid-2025); the enhanced-JQL endpoint replaces it. The
     // response still has an `issues[]` array, so `parse_issues` is unchanged.
     let url = format!("{}/rest/api/3/search/jql", base_url.trim_end_matches('/'));
-    let jql = build_jql(project, assignee, status_category, sprint_scope);
+    let jql = build_jql(project, assignee, status_category, sprint_scope, sprint_id);
     let client = crate::net::client();
     let body = crate::net::send_retrying(
         client
@@ -1565,7 +1687,7 @@ mod tests {
     #[test]
     fn jql_defaults_to_current_user_all_projects() {
         assert_eq!(
-            build_jql("", "", "", ""),
+            build_jql("", "", "", "", ""),
             "assignee = currentUser() ORDER BY updated DESC"
         );
     }
@@ -1573,7 +1695,7 @@ mod tests {
     #[test]
     fn jql_scopes_to_project_and_assignee() {
         assert_eq!(
-            build_jql("QAT", "okta@company.com", "", ""),
+            build_jql("QAT", "okta@company.com", "", "", ""),
             "project = \"QAT\" AND assignee = \"okta@company.com\" ORDER BY updated DESC"
         );
     }
@@ -1581,7 +1703,7 @@ mod tests {
     #[test]
     fn jql_project_only_uses_current_user() {
         assert_eq!(
-            build_jql("QAT", "", "", ""),
+            build_jql("QAT", "", "", "", ""),
             "project = \"QAT\" AND assignee = currentUser() ORDER BY updated DESC"
         );
     }
@@ -1589,7 +1711,7 @@ mod tests {
     #[test]
     fn jql_with_status_category() {
         assert_eq!(
-            build_jql("QAT", "", "In Progress", ""),
+            build_jql("QAT", "", "In Progress", "", ""),
             "project = \"QAT\" AND assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC"
         );
     }
@@ -1597,8 +1719,30 @@ mod tests {
     #[test]
     fn jql_with_active_sprint() {
         assert_eq!(
-            build_jql("QAT", "", "", "active"),
+            build_jql("QAT", "", "", "active", ""),
             "project = \"QAT\" AND assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn jql_with_specific_sprint() {
+        // "specific" + a numeric id -> filters to that one sprint.
+        assert_eq!(
+            build_jql("QAT", "", "", "specific", "9348"),
+            "project = \"QAT\" AND assignee = currentUser() AND sprint = 9348 ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn jql_specific_without_id_or_non_numeric_is_ignored() {
+        // No id, or a non-numeric id (injection guard), -> no sprint filter.
+        assert_eq!(
+            build_jql("QAT", "", "", "specific", ""),
+            "project = \"QAT\" AND assignee = currentUser() ORDER BY updated DESC"
+        );
+        assert_eq!(
+            build_jql("QAT", "", "", "specific", "1 OR 1=1"),
+            "project = \"QAT\" AND assignee = currentUser() ORDER BY updated DESC"
         );
     }
 
@@ -1630,8 +1774,61 @@ mod tests {
     #[test]
     fn jql_with_backlog_scope() {
         assert_eq!(
-            build_jql("QAT", "", "", "backlog"),
+            build_jql("QAT", "", "", "backlog", ""),
             "project = \"QAT\" AND assignee = currentUser() AND sprint is EMPTY ORDER BY updated DESC"
         );
+    }
+
+    // --- board fixture: GET /rest/agile/1.0/board?projectKeyOrId=QAT ---
+    const BOARDS_FIXTURE: &str = r#"{
+      "maxResults": 50, "startAt": 0, "total": 2, "isLast": true,
+      "values": [
+        {"id": 12, "name": "QAT board", "type": "scrum"},
+        {"id": 34, "name": "QAT secondary", "type": "kanban"}
+      ]
+    }"#;
+
+    #[test]
+    fn parses_first_board_id() {
+        assert_eq!(parse_first_board_id(BOARDS_FIXTURE), Some(12));
+        assert_eq!(parse_first_board_id(r#"{"values":[]}"#), None);
+        assert_eq!(parse_first_board_id("not json"), None);
+    }
+
+    // --- sprint fixture: GET /rest/agile/1.0/board/12/sprint?state=active,future ---
+    const SPRINTS_FIXTURE: &str = r#"{
+      "maxResults": 50, "startAt": 0, "isLast": true,
+      "values": [
+        {"id": 9348, "name": "QAT Sprint 58", "state": "active"},
+        {"id": 9360, "name": "QAT Sprint 59", "state": "future"},
+        {"id": 9361, "state": "future"}
+      ]
+    }"#;
+
+    #[test]
+    fn parses_sprints_id_name_and_state() {
+        let sprints = parse_sprints(SPRINTS_FIXTURE).unwrap();
+        assert_eq!(sprints.len(), 3);
+        assert_eq!(
+            sprints[0],
+            JiraSprint {
+                id: 9348,
+                name: "QAT Sprint 58".to_string(),
+                state: "active".to_string(),
+            }
+        );
+        assert_eq!(sprints[1].id, 9360);
+        assert_eq!(sprints[1].name, "QAT Sprint 59");
+        // A sprint missing its name still parses (name defaults to "").
+        assert_eq!(sprints[2].id, 9361);
+        assert_eq!(sprints[2].name, "");
+    }
+
+    #[test]
+    fn parse_sprints_skips_entries_without_id() {
+        let json = r#"{"values":[{"name":"no id","state":"active"},{"id":7,"name":"ok","state":"future"}]}"#;
+        let sprints = parse_sprints(json).unwrap();
+        assert_eq!(sprints.len(), 1);
+        assert_eq!(sprints[0].id, 7);
     }
 }

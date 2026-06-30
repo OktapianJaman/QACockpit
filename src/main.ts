@@ -15,6 +15,7 @@ import type {
   JiraProject,
   JiraUser,
   JiraTransition,
+  JiraSprint,
   AppConfig,
 } from "./types";
 import { CONFIG_KEYS, KNOWN_REPOS } from "./constants";
@@ -233,6 +234,7 @@ const SCOPE_LABEL: Record<string, string> = {
   "": "Semua",
   active: "Sprint aktif",
   backlog: "Backlog",
+  specific: "Sprint tertentu",
 };
 
 /** Show total tickets + story points for the loaded board, labeled by the
@@ -2118,6 +2120,7 @@ const JIRA_DROPDOWN_KEYS: (keyof AppConfig)[] = [
   "jira_story_point_field",
   "jira_project",
   "jira_assignee",
+  "jira_sprint",
 ];
 
 const DEFAULT_STORY_POINT_FIELD = "customfield_10016";
@@ -2145,6 +2148,41 @@ function seedAssigneeDropdown(current: string): void {
   sel.innerHTML = opts.join("");
 }
 
+/** Seed the sprint select with just the saved id (so save round-trips before
+ *  the live list loads). Empty = a single "(pilih sprint)" placeholder. */
+function seedSprintDropdown(current: string): void {
+  const sel = $("cfg-jira_sprint") as HTMLSelectElement;
+  const opts = [`<option value=""${current ? "" : " selected"}>(pilih sprint)</option>`];
+  if (current) opts.push(`<option value="${esc(current)}" selected>Sprint ${esc(current)}</option>`);
+  sel.innerHTML = opts.join("");
+}
+
+/** Show the sprint picker row only when the sprint scope is "specific". */
+function toggleSprintRow(): void {
+  const scope = ($("cfg-jira_sprint_scope") as HTMLSelectElement).value;
+  show($("jira-sprint-row"), scope === "specific");
+}
+
+/** Repopulate the sprint select from the project's board (active + future
+ *  sprints). Keeps a saved sprint selectable even if it's not in the list. */
+async function loadSprints(project: string, current: string): Promise<void> {
+  const sel = $("cfg-jira_sprint") as HTMLSelectElement;
+  const sprints = await invoke<JiraSprint[]>("list_jira_sprints", { project });
+  const opts = [`<option value=""${current ? "" : " selected"}>(pilih sprint)</option>`];
+  let matched = false;
+  for (const s of sprints) {
+    const id = String(s.id);
+    const isSel = id === current;
+    if (isSel) matched = true;
+    const tag = s.state === "active" ? " · aktif" : "";
+    opts.push(`<option value="${esc(id)}"${isSel ? " selected" : ""}>${esc(s.name)}${tag}</option>`);
+  }
+  if (current && !matched) {
+    opts.push(`<option value="${esc(current)}" selected>Sprint ${esc(current)}</option>`);
+  }
+  sel.innerHTML = opts.join("");
+}
+
 async function openSettings(): Promise<void> {
   try {
     const cfg = await invoke<AppConfig>("get_config");
@@ -2165,6 +2203,8 @@ async function openSettings(): Promise<void> {
     seedFieldDropdown(cfg.jira_story_point_field ?? "");
     seedProjectDropdown(cfg.jira_project ?? "");
     seedAssigneeDropdown(cfg.jira_assignee ?? "");
+    seedSprintDropdown(cfg.jira_sprint ?? "");
+    toggleSprintRow();
     $("jira-fields-hint").textContent = "";
   } catch (e) {
     toast(`Gagal muat pengaturan: ${errStr(e)}`, "error");
@@ -2298,6 +2338,11 @@ async function loadFromJira(): Promise<void> {
 
     // --- Assignees (scoped to the currently-selected project) ---
     await loadAssignees(projSel.value, cfg.jira_assignee);
+
+    // --- Sprints (only when "Sprint tertentu" is the chosen scope) ---
+    if (cfg.jira_sprint_scope === "specific") {
+      await loadSprints(projSel.value, cfg.jira_sprint);
+    }
 
     toast("Pilihan dari Jira dimuat.");
   } catch (e) {
@@ -2634,11 +2679,31 @@ function wireEvents(): void {
     void runTest("gemini-test-btn", "gemini-test-status", "test_gemini_connection")
   );
   // When the project changes, reload assignees scoped to it (keep current pick).
+  // Sprints belong to a project's board too, so refresh them when the picker is
+  // visible (scope = "specific").
   $("cfg-jira_project").addEventListener("change", () => {
     const project = ($("cfg-jira_project") as HTMLSelectElement).value;
     const current = ($("cfg-jira_assignee") as HTMLSelectElement).value;
     void loadAssignees(project, current).catch((e) =>
       toast(`Gagal muat assignee: ${errStr(e)}`, "error")
+    );
+    if (($("cfg-jira_sprint_scope") as HTMLSelectElement).value === "specific") {
+      const sprint = ($("cfg-jira_sprint") as HTMLSelectElement).value;
+      void loadSprints(project, sprint).catch((e) =>
+        toast(`Gagal muat sprint: ${errStr(e)}`, "error")
+      );
+    }
+  });
+
+  // Toggling the sprint scope shows/hides the sprint picker; switching to
+  // "specific" lazily loads the project's sprints.
+  $("cfg-jira_sprint_scope").addEventListener("change", () => {
+    toggleSprintRow();
+    if (($("cfg-jira_sprint_scope") as HTMLSelectElement).value !== "specific") return;
+    const project = ($("cfg-jira_project") as HTMLSelectElement).value;
+    const sprint = ($("cfg-jira_sprint") as HTMLSelectElement).value;
+    void loadSprints(project, sprint).catch((e) =>
+      toast(`Gagal muat sprint: ${errStr(e)}`, "error")
     );
   });
 

@@ -53,8 +53,13 @@ pub struct AppConfig {
     /// always "" now, so the JQL applies no status filter.
     #[serde(default)]
     pub jira_status_category: String,
-    /// Sprint scope: "" (all-time) | "active" (current sprint) | "backlog".
+    /// Sprint scope: "" (all-time) | "active" (current sprint) | "backlog" |
+    /// "specific" (the one sprint in `jira_sprint`).
     pub jira_sprint_scope: String,
+    /// Numeric id of the chosen sprint when `jira_sprint_scope` == "specific"
+    /// (e.g. "9348"). Empty otherwise. Resolved via the Agile board API.
+    #[serde(default)]
+    pub jira_sprint: String,
     pub github_token: String,
     /// Google Gemini API key (the only AI provider). The model is hardcoded
     /// (see [`crate::ai::gemma::GEMINI_MODEL`]) and not user-configurable.
@@ -99,6 +104,7 @@ fn load_config(conn: &Connection) -> Result<AppConfig, String> {
         jira_assignee: get("jira_assignee")?.unwrap_or_default(),
         jira_status_category: get("jira_status_category")?.unwrap_or_default(),
         jira_sprint_scope: get("jira_sprint_scope")?.unwrap_or_default(),
+        jira_sprint: get("jira_sprint")?.unwrap_or_default(),
         github_token: get("github_token")?.unwrap_or_default(),
         gemini_api_key: get("gemini_api_key")?.unwrap_or_default(),
         ai_language: get("ai_language")?
@@ -162,6 +168,7 @@ fn save_config(conn: &Connection, cfg: &AppConfig) -> Result<(), String> {
     set("jira_assignee", &cfg.jira_assignee)?;
     set("jira_status_category", &cfg.jira_status_category)?;
     set("jira_sprint_scope", &cfg.jira_sprint_scope)?;
+    set("jira_sprint", &cfg.jira_sprint)?;
     set_secret("github_token", &cfg.github_token)?;
     set_secret("gemini_api_key", &cfg.gemini_api_key)?;
     set("ai_language", &cfg.ai_language)?;
@@ -602,6 +609,7 @@ pub async fn sync_now(state: tauri::State<'_, AppState>) -> Result<SyncResult, S
         // we always pull all statuses (within the chosen sprint scope).
         "",
         &cfg.jira_sprint_scope,
+        &cfg.jira_sprint,
     )
     .map_err(|e| format!("Jira sync failed: {e}"))?;
     integrations::save_tickets(&conn, &tickets).map_err(|e| e.to_string())?;
@@ -779,6 +787,34 @@ pub async fn list_jira_assignees(
         &project,
     )
     .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// List the active + future sprints for a project (for the Settings "Sprint
+/// tertentu" picker). Resolves the project's board, then its sprints. Falls
+/// back to the saved project when the caller passes an empty one; an empty
+/// project yields an empty list. Read-only.
+#[tauri::command]
+pub async fn list_jira_sprints(
+    state: tauri::State<'_, AppState>,
+    project: String,
+) -> Result<Vec<integrations::jira::JiraSprint>, String> {
+    with_conn(&state, move |conn| {
+        let cfg = load_config(&conn)?;
+        require_jira_creds(&cfg)?;
+        let project = if project.trim().is_empty() {
+            cfg.jira_project.clone()
+        } else {
+            project
+        };
+        integrations::jira::fetch_sprints(
+            &cfg.jira_base_url,
+            &cfg.jira_email,
+            &cfg.jira_token,
+            &project,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
 }
